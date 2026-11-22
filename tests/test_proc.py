@@ -34,7 +34,7 @@ CHILD = """
 import os, subprocess, sys, time
 from pathlib import Path
 folder = Path(sys.argv[1])
-flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
+flags = 0x08000000 | 0x00000200 if sys.platform == "win32" else 0
 subprocess.Popen(
     [sys.executable, str(folder / "grandchild.py"), str(folder / "grandchild.pid"), sys.argv[3]],
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags,
