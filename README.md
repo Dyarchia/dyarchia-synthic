@@ -1,0 +1,151 @@
+# Synthic
+
+Synthic is an agent harness: the engine and nothing else. It runs one or more model agents on a task,
+with tools, a journal and a budget. Policy, instructions, capabilities and environment are separate
+things that it loads from files or enforces, never things the agent decides. Once the rules are set,
+a run goes on by itself, and the human can interrupt it at any moment.
+
+## Install
+
+```bash
+py -m pip install -e .
+```
+
+Python 3.12 or newer. The only dependency is `httpx`. Set `ANTHROPIC_API_KEY` in the environment; it is
+not passed to the agent's shell, hooks or MCP servers unless `[environment.env]` sets it.
+
+## Smallest run
+
+```bash
+synthic run "Add a --verbose flag to cli.py" --cwd path/to/repo
+```
+
+`synthic run` never prompts and does not read stdin unless it is a terminal. The task can also come from
+`--task-file FILE` or from stdin with `-`. Exit codes: 0 delivered, 1 failed, 2 usage or policy error,
+3 budget, 130 stopped. `--quiet` prints only the final summary, `--json` prints one JSON object per
+event, and the last one is the result.
+
+Other commands: `runs`, `show [run-id] [--agent ID] [--full]`, `questions [run-id]`, `policy`, `prune`.
+`synthic policy` prints every value in force and the level that set it, before you start anything.
+`synthic runs` shows each run as `running`, `crashed` (no recorded end and no live process), or its
+final status.
+
+## Policy
+
+```toml
+initial_role = "build"
+never_send = ["internal-\\d{4}"]
+
+[role.build]
+model = "sonnet"
+effort = "high"
+tools = ["sh", "edit", "spawn"]
+can_spawn = ["explore"]
+
+[budget]
+dollars = 5.0
+wall_clock_hours = 4
+
+[human]
+wait_seconds = 300
+
+[provider]
+retry_seconds = 1800
+
+[permissions]
+"sh: git push*" = "deny"
+"edit: .github/*" = "ask"
+```
+
+Four levels, from most to least authority, over the packaged defaults:
+
+```text
+organization  the file named by the SYNTHIC_ORG_POLICY environment variable
+user          ~/.synthic/policy.toml  (SYNTHIC_HOME replaces ~)
+project       <repo>/.synthic/policy.toml
+task          --policy FILE and --set KEY=VALUE (for example --set role.build.model=opus)
+```
+
+- A value comes from the lowest level that sets it, unless a higher level lists its key in `fixed`.
+- Lists are replaced as a whole. Tables merge key by key.
+- Numeric caps (budget, agents, `max_steps`) can only be tightened: the smallest value wins.
+- A `deny` permission and `never_send` patterns always hold, from any level. Hooks accumulate.
+- The project file is untrusted by default: only its prohibitions count. `--trust-project` accepts it.
+
+Other pieces: `[provider]` sets `retry_seconds` (how long transient failures of one model call are
+retried) and `timeout_seconds` (how long a stream may stay silent). `[models.<alias>].extra` and
+`[role.<name>].extra` are free-form vendor request fields, the role's winning over the model's.
+`agents.repeat_limit` bounds identical repeated tool calls. `never_send` and `journal.mask` hold regular
+expressions (Python `re` syntax), not globs, and a pattern that does not compile is a policy error.
+With `environment.mode = "copy"`, each child works in a copy, on the git branch
+`synthic/<run_id>/<agent_id>`.
+
+## Interrupting a run
+
+From the same terminal (when stdin is a terminal), type a line while the run goes:
+
+```text
+/stop                         stop the run
+/redirect [@agent] <text>     abort the current work and continue with <text>
+/answer <question-id> <text>  answer an open question
+/questions                    list the open questions
+/add [@agent] <text>          add a message for the agent; any other line does the same
+```
+
+Without `@agent` the root agent is addressed; `@a1` addresses child `a1`, and an unknown or ended
+agent gives a one-line note. Ctrl+C once is a clean stop (every process the agent started is killed and
+the summary is printed); a second Ctrl+C exits at once.
+
+From another terminal, for a run started hours ago or by a scheduler:
+
+```bash
+synthic stop [run-id]
+synthic say [--agent ID] [run-id] "use the staging org"
+synthic redirect [--agent ID] [run-id] "forget the refactor, fix the failing test"
+synthic answer [run-id] <question-id> "yes, go ahead"
+```
+
+Each command appends a JSON line to `control.jsonl` in the run folder. The running process polls that
+file about twice a second. Without a run id, the most recently active run is used. A run keeps a file
+named `alive` fresh while it runs; the four commands refuse with exit code 2 when the run is not alive,
+and for `say` the message tells you to use `synthic resume` instead.
+
+## Runs and resuming
+
+Runs live in `journal.dir` (default `~/.synthic/runs`) as `<run-id>/<agent-id>/journal.jsonl`, one JSON
+line per event, flushed as written.
+
+```bash
+synthic resume [run-id]
+synthic resume [run-id] "now also update the docs"
+```
+
+`resume` continues a run that was stopped or cut by a crash, with the same options and interrupts as
+`run`. A run that ended (delivered, failed or budget) is continued only when you give a text, which
+enters as a new message from you; without one it just shows its recorded result. The run id may be
+omitted (the most recent run is used); a word shaped like a run id that matches no run is an error, not
+text. A run that is alive in another process is refused.
+
+## Tools
+
+```text
+sh       run a shell command; a long one moves to the background
+job      follow, wait for or kill a background command
+edit     replace exact text in a file, or create a file
+spawn    start a child agent on a task
+agent    list, wait for, message or cancel child agents
+ask      ask the human, with the assumption to proceed on
+receipt  read back the full text of a shortened tool result
+done     end the run with a summary
+skill    load a skill, when plugins provide any
+mcp      call a tool of a configured MCP server
+```
+
+## Tests
+
+```bash
+py -m pip install pytest
+py -m pytest -q
+```
+
+The tests run offline against a scripted model.
