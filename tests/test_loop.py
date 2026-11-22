@@ -598,6 +598,8 @@ def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     tools = ["done", "ask", "receipt", "sh", "job", "edit", "spawn", "agent"]
     texts = build_system(policy, role, folder, tools)
     assert texts == build_system(policy, role, folder, tools)
+    assert all(text.endswith("\n\n") for text in texts)
+    assert f"Working folder: {folder}\n" in "".join(texts)
     assert "Repo says hi." not in "".join(texts)
     assert "Denied: sh: git push*" in texts[-1] and "$2.00 in total" in texts[-1] and "may spawn: worker" in texts[-1]
     opened = make_policy(tmp_path, {**rules, "instructions": {"load_repo_files": True}}).policy

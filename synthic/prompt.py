@@ -29,7 +29,10 @@ def _preamble(policy: Policy, cwd: Path, tools: Collection[str]) -> str:
         lines.append(describe_shell(policy.environment) + ".")
     if "spawn" in tools:
         lines.append("Child agents run in parallel; when you have nothing to do until one ends, call `agent` wait.")
-    lines.append(f"Platform: {platform.system()} {platform.release()}. Working folder: {cwd}")
+    lines.append(f"Platform: {platform.system()} {platform.release()}.")
+    lines.append(f"Working folder: {cwd}")
+    if "sh" in tools:
+        lines.append("Every command already starts in the working folder, and relative paths resolve against it.")
     return "\n".join(lines)
 
 
@@ -127,4 +130,7 @@ def build_system(
         texts.append(index)
     if policy.visible_to_agent:
         texts.append(_limits(policy, role, tools))
-    return texts
+    """The vendor joins system blocks with nothing in between, so each block must end its own
+    paragraph. Without this the working folder ran into the first word of the next block, and
+    the first live run wrote its file in a folder that did not exist."""
+    return [text.rstrip() + "\n\n" for text in texts]

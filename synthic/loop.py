@@ -971,7 +971,8 @@ class Agent:
         output = replace(output, text=self.runtime.masker.mask(output.text))
         entry = self.context.cap(call, output)
         self._journal_result(call.id, call.name, entry, seconds)
-        state = "error" if entry.is_error else "ok"
+        code = output.meta.get("exit_code")
+        state = "error" if entry.is_error else f"exit {code}" if code else "ok"
         self.runtime.output(self.id, "tool_end", f"{call.name} {state} in {seconds:.1f}s")
         return entry
 
