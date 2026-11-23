@@ -7,7 +7,6 @@ elsewhere. The loop scenarios reuse the helpers of ``test_loop.py``.
 from __future__ import annotations
 
 import asyncio
-import base64
 import itertools
 import json
 import struct

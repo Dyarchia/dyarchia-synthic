@@ -266,6 +266,7 @@ class Context:
         self._cleaned: set[str] = set()
         self._attachments: dict[int, tuple[str, Block]] = {}
         self._attached = 0
+        self._held: list[tuple[str, Sequence[Attachment]]] = []
         self._last_call_at: float | None = None
         self._last_prompt_tokens = 0
         self._chars_at_call = 0
@@ -275,9 +276,19 @@ class Context:
 
         Attachments are numbered in the order they enter, which replay
         repeats, so a ``clean`` record can name them by number.
+
+        While a server tool call is open (``server_pending``) the message is
+        held and enters right after the next assistant turn: the docs require
+        the user message that follows such a turn to hold only ``tool_result``
+        blocks, and a text there ends the turn with a 400. Holding depends on
+        the history alone, so replay holds and releases at the same points.
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
         """
         if not text:
             raise ValueError("empty user text")
+        if self.server_pending():
+            self._held.append((text, attachments))
+            return
         blocks: list[Block] = []
         for attachment in attachments:
             self._attached += 1
@@ -301,6 +312,32 @@ class Context:
             self._messages[-1]["content"].extend(blocks)
         else:
             self._messages.append({"role": "assistant", "content": blocks})
+        if self._held and not self.server_pending():
+            held, self._held = self._held, []
+            for text, attachments in held:
+                self.add_user(text, attachments)
+
+    def server_pending(self) -> bool:
+        """Whether a ``server_tool_use`` of the history still has no result block.
+
+        That happens when the model called a server tool and a client tool in
+        one turn (the reply stops at ``tool_use``) and after some ``pause_turn``
+        replies; the provider runs the call at the start of the next request.
+        """
+        called: set[str] = set()
+        for message in self._messages:
+            if message["role"] != "assistant":
+                continue
+            for block in message["content"]:
+                kind = block.get("type")
+                if kind == "server_tool_use":
+                    called.add(block.get("id"))
+                elif kind != "tool_result" and "tool_use_id" in block:
+                    called.discard(block["tool_use_id"])
+        return bool(called)
+
+    def last_role(self) -> str | None:
+        return self._messages[-1]["role"] if self._messages else None
 
     def add_tool_results(self, results: list[ToolResultEntry]) -> None:
         pending = self._pending()
@@ -645,9 +682,25 @@ class Context:
         starts = [i for i, m in enumerate(self._messages) if m["role"] == "assistant"]
         for start in starts[-s.compact_keep_turns :] if s.compact_keep_turns > 0 else []:
             chars = sum(_block_chars(b) for m in self._messages[start:] for b in m["content"])
-            if start > 1 and chars <= s.compact_keep_chars:
+            if start > 1 and chars <= s.compact_keep_chars and self._self_contained(start):
                 return len(self._messages) - start
         return 0
+
+    def _self_contained(self, start: int) -> bool:
+        """Whether every server tool result from ``start`` on has its ``server_tool_use`` there too.
+
+        In a turn that mixed server and client tools, the call and its result
+        arrive in two replies, so a tail cut between them would send a result
+        without its call.
+        """
+        called: set[str] = set()
+        for message in self._messages[start:]:
+            for block in message["content"]:
+                if block.get("type") == "server_tool_use":
+                    called.add(block.get("id"))
+                elif block.get("type") != "tool_result" and "tool_use_id" in block and block["tool_use_id"] not in called:
+                    return False
+        return True
 
     def apply_compaction(self, summary: str, keep: int = 0) -> None:
         """Replace the history with ``summary``, followed by its last ``keep`` messages as they were.
@@ -701,6 +754,7 @@ class Context:
         self._cleaned.clear()
         self._attachments.clear()
         self._attached = 0
+        self._held = []
         receipts = self._receipts
         for record in records:
             data = record.data

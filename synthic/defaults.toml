@@ -119,4 +119,12 @@ skills = []
 path = []
 packages = []
 
+[web]
+search_tool = "web_search_20250305"
+fetch_tool = "web_fetch_20250910"
+allowed_domains = []
+blocked_domains = []
+fetch_citations = false
+search_price = 10.0
+
 [permissions]

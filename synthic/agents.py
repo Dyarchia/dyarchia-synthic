@@ -34,6 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from . import web
 from .environment import Workspace
 from .hooks import Hooks
 from .journal import (
@@ -319,6 +320,7 @@ class Runtime:
             cache_ttl=policy.context.cache_ttl,
             retry_seconds=policy.provider.retry_seconds,
             timeout_seconds=policy.provider.timeout_seconds,
+            search_price=policy.web.search_price,
         )
         self.ledger = Ledger(policy.budget)
         self.agents: dict[str, Agent] = {}
@@ -330,7 +332,7 @@ class Runtime:
         self._questions: dict[str, Question] = {}
         self._callbacks: list[OutputCallback] = []
         self._ids = itertools.count(1)
-        self.warnings = [*loaded.warnings, *self.plugins.problems]
+        self.warnings = [*loaded.warnings, *self.plugins.problems, *web.warnings(policy)]
         for raw in policy.instructions.files:
             path = Path(raw).expanduser()
             if not (path if path.is_absolute() else self.root / path).is_file():

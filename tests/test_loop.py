@@ -731,7 +731,7 @@ def test_runtime_builds_its_provider_from_the_provider_table(tmp_path: Path, mon
         await Runtime(policy, project(tmp_path)).close()
 
     asyncio.run(main())
-    assert built == [{"cache_ttl": "5m", "retry_seconds": 7200.0, "timeout_seconds": 90.0}]
+    assert built == [{"cache_ttl": "5m", "retry_seconds": 7200.0, "timeout_seconds": 90.0, "search_price": 10.0}]
 
 
 def compaction_requests(provider: ScriptedProvider) -> list[int]:

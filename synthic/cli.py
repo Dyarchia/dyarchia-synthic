@@ -307,6 +307,8 @@ class Printer:
             f"cost: ${total.cost_usd:.4f}",
             f"run: {runtime.run_id}",
         ]
+        if total.web_search_requests or total.web_fetch_requests:
+            lines.insert(4, f"web: {total.web_search_requests} searches, {total.web_fetch_requests} fetches")
         if result.changes:
             lines += ["changes:", result.changes]
         self.write("\n".join(lines) + "\n")
@@ -636,8 +638,15 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
             shown = f" (attached: {', '.join(files)})" if files else ""
             return f"user [{data.get('source')}]: {fit(data.get('text', ''))}{shown}"
         case "assistant":
-            says = "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-            return f"says: {fit(says)}" if says.strip() else None
+            content = data.get("content", [])
+            says = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+            lines = [f"says: {fit(says)}"] if says.strip() else []
+            lines += [
+                f"server tool {b.get('name')} {fit(json.dumps(b.get('input', {}), ensure_ascii=False))}"
+                for b in content
+                if b.get("type") == "server_tool_use"
+            ]
+            return "\n".join(lines) or None
         case "tool_intent":
             name = str(data.get("name"))
             if name in ("done", "ask"):

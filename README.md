@@ -114,6 +114,35 @@ synthic say [run-id] "This is the error" --attach screenshot.png
   a one-line stub naming the file, like old tool outputs. Without `view` attachments are kept, since the
   model could not see them again. Compaction summarizes them with the rest.
 
+## Web search and web fetch
+
+```toml
+[role.research]
+model = "sonnet"
+tools = ["web_search", "web_fetch"]
+
+[web]
+search_max_uses = 5
+fetch_max_uses = 10
+allowed_domains = ["docs.python.org"]
+
+[permissions]
+"web_fetch: pastebin.com" = "deny"
+```
+
+- These are server tools: the provider runs them inside the model call, and their calls and results come
+  back in the reply, are journaled and replayed with it. No default role has them.
+- `[web]` sets the tool versions (`search_tool`, `fetch_tool`, basic versions by default), `*_max_uses` per
+  turn, `allowed_domains` or `blocked_domains`, `fetch_max_content_tokens`, `fetch_citations`, and
+  `search_price` (dollars per 1,000 searches, 10 by default), which the ledger adds to the token cost.
+- The limit: the engine sees a search or a fetch only after it happened, so no hook, `ask` rule or human
+  can stop one call. Permissions apply when the request is built: a rule with pattern `*` decides whether
+  the tool is offered (`ask` becomes `human.permission_fallback`), and a domain rule becomes a blocked or
+  allowed domain. A deny pattern that is not a domain the API takes turns the tool off, with a warning.
+- `never_send` does not mask what these tools return: the provider requires it back unchanged.
+- After a paused turn (`pause_turn`), or a turn that called server and client tools together, the engine
+  sends no new text until the provider has finished the call; messages that arrive meanwhile wait one step.
+
 ## Interrupting a run
 
 From the same terminal (when stdin is a terminal), type a line while the run goes:
@@ -168,6 +197,7 @@ sh       run a shell command; a long one moves to the background
 job      follow, wait for or kill a background command
 edit     replace exact text in a file, or create a file
 view     look at an image or a PDF
+web_search, web_fetch   server tools, run by the provider (see Web search and web fetch)
 spawn    start a child agent on a task
 agent    list, wait for, message or cancel child agents
 ask      ask the human, with the assumption to proceed on

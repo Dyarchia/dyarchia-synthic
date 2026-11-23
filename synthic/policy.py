@@ -100,11 +100,12 @@ from .types import (
     Policy,
     ProviderSettings,
     Role,
+    WebSettings,
 )
 
-ROLE_TOOLS = ("sh", "edit", "view", "spawn", "skill", "mcp")
+ROLE_TOOLS = ("sh", "edit", "view", "spawn", "skill", "mcp", "web_search", "web_fetch")
 """Every tool a role can grant. The engine tools (``done``, ``ask``, ``receipt``) need no grant; ``sh`` brings
-``job`` and ``spawn`` brings ``agent``."""
+``job`` and ``spawn`` brings ``agent``. ``web_search`` and ``web_fetch`` are server tools: the provider runs them."""
 
 APPLICATION_ORDER = ("defaults", "organization", "user", "project", "task")
 """Order in which levels are applied: each one overrides the previous ones unless they fixed the key."""
@@ -233,6 +234,17 @@ _SCHEMA: dict[str, Any] = {
         "path": "strings",
         "packages": "strings",
         "mcp": _Each({"command": "strings", "env": _Each("str")}),
+    },
+    "web": {
+        "search_tool": "str",
+        "fetch_tool": "str",
+        "search_max_uses": "int",
+        "fetch_max_uses": "int",
+        "allowed_domains": "strings",
+        "blocked_domains": "strings",
+        "fetch_max_content_tokens": "int",
+        "fetch_citations": "bool",
+        "search_price": "number",
     },
     "permissions": "rules",
     "hooks": "hooks",
@@ -632,6 +644,7 @@ def _build(
         provider=ProviderSettings(**section("provider")),
         instructions=InstructionSettings(**section("instructions")),
         plugins=PluginSettings(**plugins),
+        web=WebSettings(**section("web")),
         permissions=rules,
         default_permission=tree.get("default_permission", "allow"),
         hooks=hooks,

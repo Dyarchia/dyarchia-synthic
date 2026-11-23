@@ -58,6 +58,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from . import web
 from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
@@ -258,7 +259,9 @@ class Agent:
         self.tools = self._build_tools()
         masker = runtime.masker
         if tool_defs is None:
-            tool_defs = masker.mask_obj([to_definition(tool) for tool in self.tools.values()])
+            """Server tools go first, so the cache mark of the tool list lands on a client tool definition."""
+            client = [to_definition(tool) for tool in self.tools.values()]
+            tool_defs = masker.mask_obj([*web.definitions(self.policy, role.tools), *client])
         if system is None:
             texts = build_system(
                 self.policy, role, self.cwd, self.tools, runtime.plugins, runtime.root, parent_id is None
@@ -294,6 +297,7 @@ class Agent:
         self._repeat_warned = False
         self._questions = itertools.count(1)
         self._resumed = False
+        self._paused = False
         self._next_task: tuple[str, Sequence[Attachment]] | None = None
 
     def _build_tools(self) -> dict[str, Tool]:
@@ -559,6 +563,26 @@ class Agent:
         if cap := self._over_cap():
             self._finish = ("budget", f"Stopped: the {cap} cap was reached.")
             return
+        paused, self._paused = self._paused, False
+        if not paused:
+            await self._arrivals()
+        self._model, self._next_model = self._next_model or self.role.model, None
+        if not paused and not self.context.server_pending():
+            await self._maintain_context()
+        reply = await self._call_model()
+        if reply is not None:
+            await self._act(reply)
+
+    async def _arrivals(self) -> None:
+        """What enters before a step: a budget warning, the next task, then messages, notices and child results.
+
+        Skipped on the step that continues a ``pause_turn`` reply, which the
+        docs say to resend as it is, with no new user message; whatever came
+        meanwhile waits for the step after it. Maintenance (clean, compaction)
+        is skipped then too, and while a server tool call is open, since both
+        edit or extend the turn the provider is still working on.
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
+        """
         if warning := self.runtime.ledger.warning_due(self.id):
             await self._emit("budget_warning", warning=warning)
             self.runtime.output(self.id, "warning", warning)
@@ -569,11 +593,6 @@ class Agent:
                 await self._compact()
             self._add_user(text, "human", attachments)
         self._deliver()
-        self._model, self._next_model = self._next_model or self.role.model, None
-        await self._maintain_context()
-        reply = await self._call_model()
-        if reply is not None:
-            await self._act(reply)
 
     def _over_cap(self) -> str | None:
         if cap := self.runtime.ledger.check(self.id):
@@ -794,6 +813,7 @@ class Agent:
         self._cut_turns = 0
         self._append(reply.content)
         if reason in ("pause_turn", "compaction"):
+            self._paused = reason == "pause_turn"
             return
         if calls:
             self._idle_turns = 0
@@ -805,14 +825,21 @@ class Agent:
         """A reply cut by a limit: never run or keep a cut tool call; keep cut text and let the model go on.
 
         A thinking block cut before its signature arrived (empty signature) is
-        dropped from the end of the kept text: the API would reject it.
+        dropped from the end of the kept text: the API would reject it. So is a
+        trailing ``server_tool_use`` without its result, whose input may be cut
+        too: kept, the provider would run it on the next request.
         """
         if not calls:
             self._cut_turns = 0
             content = list(reply.content)
-            while content and content[-1].get("type") == "thinking" and not content[-1].get("signature"):
+            answered = {b.get("tool_use_id") for b in content if b.get("type") != "tool_result"}
+            while content and (
+                (content[-1].get("type") == "thinking" and not content[-1].get("signature"))
+                or (content[-1].get("type") == "server_tool_use" and content[-1].get("id") not in answered)
+            ):
                 content.pop()
-            self._append(content)
+            if content:
+                self._append(content)
             self._add_user("[Your reply was cut off at the output limit. Continue from where it stopped.]", "engine")
             return
         if reply.stop_reason == "max_tokens" and self._last_limit < self.spec().max_output_tokens:
@@ -834,8 +861,10 @@ class Agent:
         With children running this is a parent waiting for them: it sleeps
         until something arrives. Otherwise it is reminded once to continue or
         call ``done``; a second time in a row ends the agent as ``failed``.
+        A message that was held during a server tool call and entered after
+        this reply (``Context.add_user``) is news as well.
         """
-        if self.has_news():
+        if self.has_news() or self.context.last_role() == "user":
             return
         if any(not h.done.is_set() for h in self.children.values()):
             while not self.has_news() and not self._cancel.is_set():

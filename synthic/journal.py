@@ -80,20 +80,31 @@ class Masker:
         blocks byte for byte, and a secret-shaped run of base64 is not a
         secret. Masking them would corrupt what must go back unchanged and make
         a replayed history differ from the live one.
+
+        Server tool results (``web_search_tool_result``, ``web_fetch_tool_result``
+        and any other ``*_tool_result`` but the client ``tool_result``) and
+        ``citations`` are untouched too: the docs require their
+        ``encrypted_content`` and ``encrypted_index`` back unchanged or the
+        request fails, and their text came from the provider, not from here.
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
         """
         if isinstance(value, str):
             return self.mask(value)
         if isinstance(value, dict):
             kind = value.get("type")
-            if kind in _OPAQUE_BLOCKS:
+            if kind in _OPAQUE_BLOCKS or _server_result(kind):
                 return value
             return {
-                key: item if kind == "base64" and key == "data" else self.mask_obj(item)
+                key: item if (kind == "base64" and key == "data") or key == "citations" else self.mask_obj(item)
                 for key, item in value.items()
             }
         if isinstance(value, (list, tuple)):
             return [self.mask_obj(item) for item in value]
         return value
+
+
+def _server_result(kind: Any) -> bool:
+    return isinstance(kind, str) and kind.endswith("_tool_result") and kind != "tool_result"
 
 
 def _base(settings: JournalSettings) -> Path:

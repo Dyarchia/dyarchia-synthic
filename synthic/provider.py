@@ -51,7 +51,7 @@ BACKOFF_CAP = 60.0
 BACKOFF_MAX_DOUBLINGS = 10
 
 
-def cost(spec: ModelSpec, usage: Usage, ttl: str) -> float:
+def cost(spec: ModelSpec, usage: Usage, ttl: str, search_price: float = 0.0) -> float:
     """Dollar cost of ``usage`` on ``spec``.
 
     Cache writes are priced at the 1 hour rate when ``ttl`` is ``"1h"``. A spec
@@ -59,6 +59,11 @@ def cost(spec: ModelSpec, usage: Usage, ttl: str) -> float:
     writes free, so in that case the documented multiplier (2x base input) is
     used instead. Above ``long_prompt_threshold`` prompt tokens (strictly
     greater) every price is multiplied by ``long_prompt_factor``.
+
+    Web searches add ``search_price`` dollars per 1,000, outside the token
+    factor; fetches cost tokens only. A failed search is not billed and is not
+    counted in ``web_search_requests`` either.
+    https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool (Usage and pricing)
     """
     if ttl == "1h":
         write_price = spec.price_cache_write_1h or 2 * spec.price_input
@@ -73,7 +78,7 @@ def cost(spec: ModelSpec, usage: Usage, ttl: str) -> float:
         + usage.cache_write_tokens * write_price
         + usage.cache_read_tokens * spec.price_cache_read
     )
-    return total * factor / 1_000_000
+    return total * factor / 1_000_000 + usage.web_search_requests * search_price / 1000
 
 
 class _Transient(Exception):
@@ -311,9 +316,17 @@ class _Assembler:
             self._bad_json.append(index)
 
     def _take_usage(self, usage: Any) -> None:
-        """Message_delta counts are cumulative, so each value overwrites the earlier one."""
-        if isinstance(usage, dict):
-            self._usage.update({key: value for key, value in usage.items() if isinstance(value, int)})
+        """Message_delta counts are cumulative, so each value overwrites the earlier one.
+
+        Server tool counts come nested, as ``server_tool_use.web_search_requests``
+        and ``server_tool_use.web_fetch_requests``, and are kept the same way.
+        """
+        if not isinstance(usage, dict):
+            return
+        self._usage.update({key: value for key, value in usage.items() if isinstance(value, int)})
+        server = usage.get("server_tool_use")
+        if isinstance(server, dict):
+            self._usage.update({key: value for key, value in server.items() if isinstance(value, int)})
 
     def usage(self) -> Usage:
         return Usage(
@@ -321,6 +334,8 @@ class _Assembler:
             output_tokens=self._usage.get("output_tokens", 0),
             cache_write_tokens=self._usage.get("cache_creation_input_tokens", 0),
             cache_read_tokens=self._usage.get("cache_read_input_tokens", 0),
+            web_search_requests=self._usage.get("web_search_requests", 0),
+            web_fetch_requests=self._usage.get("web_fetch_requests", 0),
         )
 
     def finish(self) -> tuple[list[Block], str]:
@@ -411,6 +426,11 @@ class AnthropicProvider:
     * ``pause_turn``: a server tool loop hit its iteration limit. Append the reply
       as is and resend with the same tools and NO new user message, plus the
       container id when one was used (``ModelReply`` does not carry it yet).
+      A ``tool_use`` reply can also hold a ``server_tool_use`` with no result
+      yet (server and client tools called together): the next user message
+      must then hold only the ``tool_result`` blocks, and the API runs the
+      server tool on that request.
+      https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools
     * ``refusal``: HTTP 200, content may be partial or empty. Discard it and
       retry on the fallback model. It is a normal reply, not a ``ProviderError``.
     * ``model_context_window_exceeded``: the reply filled the context window;
@@ -437,8 +457,10 @@ class AnthropicProvider:
         *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        search_price: float = 0.0,
     ) -> None:
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.search_price = search_price
         self._base_url = base_url.rstrip("/")
         self.cache_ttl = cache_ttl
         self.retry_seconds = retry_seconds
@@ -540,7 +562,7 @@ class AnthropicProvider:
                 assembler.feed(data)
         content, stop_reason = assembler.finish()
         usage = assembler.usage()
-        usage.cost_usd = cost(request.model, usage, self.cache_ttl)
+        usage.cost_usd = cost(request.model, usage, self.cache_ttl, self.search_price)
         return ModelReply(content=content, stop_reason=stop_reason, usage=usage, model_id=assembler.model or request.model.id)
 
     async def _retrying[T](self, attempt: Callable[[], Awaitable[T]]) -> T:

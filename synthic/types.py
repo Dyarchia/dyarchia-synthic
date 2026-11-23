@@ -57,13 +57,19 @@ class ModelSpec:
 
 @dataclass
 class Usage:
-    """Token counts and cost of one model call, or the running sum of many."""
+    """Token counts and cost of one model call, or the running sum of many.
+
+    ``web_search_requests`` and ``web_fetch_requests`` count the server tool
+    calls the provider ran during the call; searches are billed per use.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
     cost_usd: float = 0.0
+    web_search_requests: int = 0
+    web_fetch_requests: int = 0
 
     def add(self, other: Usage) -> None:
         self.input_tokens += other.input_tokens
@@ -71,6 +77,8 @@ class Usage:
         self.cache_write_tokens += other.cache_write_tokens
         self.cache_read_tokens += other.cache_read_tokens
         self.cost_usd += other.cost_usd
+        self.web_search_requests += other.web_search_requests
+        self.web_fetch_requests += other.web_fetch_requests
 
     @property
     def context_tokens(self) -> int:
@@ -339,6 +347,27 @@ class ProviderSettings:
 
 
 @dataclass(frozen=True)
+class WebSettings:
+    """The server tools ``web_search`` and ``web_fetch``, offered to a role that lists them in its tools.
+
+    ``search_tool`` and ``fetch_tool`` are the tool versions sent as ``type``.
+    ``*_max_uses`` caps the calls of one turn (``None``: no cap). The domain
+    lists apply to both tools, together with the permission rules (see
+    ``web.py``). ``search_price`` is in US dollars per 1,000 searches.
+    """
+
+    search_tool: str = "web_search_20250305"
+    fetch_tool: str = "web_fetch_20250910"
+    search_max_uses: int | None = None
+    fetch_max_uses: int | None = None
+    allowed_domains: tuple[str, ...] = ()
+    blocked_domains: tuple[str, ...] = ()
+    fetch_max_content_tokens: int | None = None
+    fetch_citations: bool = False
+    search_price: float = 10.0
+
+
+@dataclass(frozen=True)
 class HookSpec:
     """A command of the human that runs on an event. ``match`` is a glob on the tool name, or empty."""
 
@@ -378,8 +407,9 @@ class PermissionRule:
 
     ``tool`` is a tool name. ``pattern`` is a glob matched against the tool's
     target: the command line for ``sh``, the path relative to the working
-    folder (forward slashes) for ``edit``, ``server/tool`` for ``mcp``, the role
-    for ``spawn``.
+    folder (forward slashes) for ``edit`` and ``view``, ``server/tool`` for
+    ``mcp``, the role for ``spawn``, a domain for ``web_search`` and
+    ``web_fetch`` (applied when the request is built, see ``web.py``).
     """
 
     tool: str
@@ -405,6 +435,7 @@ class Policy:
     provider: ProviderSettings = ProviderSettings()
     instructions: InstructionSettings = InstructionSettings()
     plugins: PluginSettings = PluginSettings()
+    web: WebSettings = WebSettings()
     permissions: tuple[PermissionRule, ...] = ()
     default_permission: Decision = "allow"
     hooks: tuple[HookSpec, ...] = ()
