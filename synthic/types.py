@@ -563,6 +563,8 @@ class Record:
     * ``answer``: ``{question_id, text}``
     * ``interrupt``: ``{mode}`` with mode ``stop``, ``add`` or ``redirect``
     * ``hook``: ``{event, action, reason}``
+    * ``todo``: ``{items: [{text, state}]}`` the agent's whole task list after a change by the ``todo``
+      tool; the context never reads it (the list enters it only through the tool's calls and results)
     * ``verify``: ``{round, passed, accepted, report, reviewer}`` one check of a
       delivery (``verify`` policy): ``accepted`` false is a rejection, which
       returns to the agent as the error result of its ``done``; ``reviewer`` is

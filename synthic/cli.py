@@ -40,6 +40,8 @@ from .loop import AgentResult
 from .media import MediaError
 from .media import load as load_media
 from .policy import LoadedPolicy, PolicyError, load_policy
+from .tools.todo import render as render_todo
+from .tools.todo import tally as tally_todo
 from .types import Attachment, Provider, Record, Usage
 
 CONTROL_FILE = "control.jsonl"
@@ -251,6 +253,8 @@ class Printer:
                 self.line(agent_id, f"? question {text}", "yellow")
             case "warning":
                 self.line(agent_id, f"! {text}", "yellow")
+            case "todo":
+                self.line(agent_id, "todo:\n" + textwrap.indent(text, "  "), "dim")
             case _:
                 self.line(agent_id, f"{kind}: {text}")
 
@@ -679,6 +683,9 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
             return f"compaction: {fit(data.get('summary', ''))}"
         case "hook":
             return f"hook {data.get('event')} {data.get('action')}: {fit(data.get('reason', ''))}"
+        case "todo":
+            items = data.get("items", [])
+            return f"todo {tally_todo(items)}" + ("\n" + render_todo(items) if full else "")
         case "verify":
             verdict = "passed" if data.get("passed") else "accepted, not verified" if data.get("accepted") else "rejected"
             by = f" by {data['reviewer']}" if data.get("reviewer") else ""
@@ -734,6 +741,11 @@ def cmd_show(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
         print(f"  {agent_id.ljust(label)}  ${usage.cost_usd:.4f}  {steps} steps  {usage.input_tokens} in, {usage.output_tokens} out")
     if len(chosen) > 1:
         print(f"  {'total'.ljust(label)}  ${grand.cost_usd:.4f}")
+    for agent_id in chosen:
+        lists = [r for r in by_agent[agent_id] if r.kind == "todo"]
+        if lists:
+            print(f"\ntask list of {agent_id}:")
+            print(textwrap.indent(render_todo(lists[-1].data.get("items", [])), "  "))
     pending = open_questions(by_agent)
     print("\nopen questions:" + ("" if pending else " none"))
     for record in pending:

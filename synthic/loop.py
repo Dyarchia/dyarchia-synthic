@@ -65,6 +65,8 @@ from .policy import decide, deep_merge
 from .prompt import build_system
 from .tools import builtin_tools, to_definition
 from .tools.jobs import JobManager
+from .tools.todo import TodoTool
+from .tools.todo import render as render_todo
 from .types import (
     Attachment,
     Block,
@@ -91,8 +93,8 @@ Status = Literal["delivered", "failed", "budget", "stopped", "cancelled"]
 ENGINE_TOOLS = frozenset({"done", "ask", "receipt"})
 """Tools every agent has whatever its role says; ``spawn_role`` never removes them."""
 
-SELF_TOOLS = frozenset({*ENGINE_TOOLS, "agent", "job"})
-"""Tools that act only on the agent's own state (its delivery, questions, receipts, children and jobs).
+SELF_TOOLS = frozenset({*ENGINE_TOOLS, "agent", "job", "todo"})
+"""Tools that act only on the agent's own state (its delivery, questions, receipts, children, jobs, task list).
 
 Permission rules guard actions on the world; running these through
 ``decide`` would let ``default_permission = "deny"`` or a ``"*: *"`` rule stop
@@ -331,6 +333,8 @@ class Agent:
             tools["edit"] = builtin["edit"]
         if "view" in granted:
             tools["view"] = builtin["view"]
+        if "todo" in granted:
+            tools["todo"] = TodoTool(self._todo_changed)
         if "spawn" in granted and self.role.can_spawn and self.depth < self.policy.agents.depth:
             tools.update(self.runtime.spawn_tools(self))
         for name, tool in self.runtime.plugin_tools.items():
@@ -386,6 +390,8 @@ class Agent:
                     self.steps += "purpose" not in record.data
                 case "question":
                     next(self._questions)
+                case "todo" if isinstance(todo := self.tools.get("todo"), TodoTool):
+                    todo.items = list(record.data["items"])
         for intent in pending_intents(records):
             entry = ToolResultEntry(intent.data["call_id"], UNKNOWN_OUTCOME, True)
             self.context.add_tool_results([entry])
@@ -720,10 +726,21 @@ class Agent:
             self._compaction_failed(f"compaction gave no usable summary (stop reason {reply.stop_reason})")
             return
         self._compact_retry_at = None
-        summary = self.runtime.masker.mask(summary)
+        summary = self.runtime.masker.mask(self._with_todo(summary))
         keep = self.context.compaction_keep()
         self.context.apply_compaction(summary, keep)
         self.journal.append("compaction", {"summary": summary, "keep": keep})
+
+    def _todo_changed(self, items: list[dict[str, str]]) -> None:
+        self.journal.append("todo", {"items": items})
+        self.runtime.output(self.id, "todo", render_todo(items))
+
+    def _with_todo(self, summary: str) -> str:
+        """A compaction summary with the task list appended, since the calls that built it are summarized away."""
+        todo = self.tools.get("todo")
+        if not isinstance(todo, TodoTool) or not todo.items:
+            return summary
+        return f"{summary}\n\nYour task list (`todo`) at this point:\n{render_todo(todo.items)}"
 
     def _compaction_failed(self, warning: str) -> None:
         measured = self.context.last_prompt_tokens

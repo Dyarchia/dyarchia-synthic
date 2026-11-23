@@ -257,6 +257,7 @@ sh       run a shell command; a long one moves to the background
 job      follow, wait for or kill a background command
 edit     replace exact text in a file, or create a file
 view     look at an image or a PDF
+todo     keep a short task list (pending, active, done, dropped)
 web_search, web_fetch   server tools, run by the provider (see Web search and web fetch)
 spawn    start a child agent on a task
 agent    list, wait for, message or cancel child agents
@@ -266,6 +267,12 @@ done     end the run with a summary
 skill    load a skill, when plugins provide any
 mcp      call a tool of a configured MCP server
 ```
+
+`view` and `todo` are granted like `sh` and `edit`, in `role.<name>.tools`; no default role has them. `todo`
+takes `set` (the whole list), `update` (steps by number) and `add`. Its result holds only the counts and the
+active step, and nothing reminds the agent of the list, so it costs only the calls themselves. Each change is a
+`todo` record in the journal, printed live by `synthic run` and at the end of `synthic show`; a resumed agent
+starts from the last one, and a compaction appends the list to its summary.
 
 ## Tests
 
