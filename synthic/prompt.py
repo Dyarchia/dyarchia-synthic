@@ -4,7 +4,7 @@ Every token here is paid on every step of every agent, and the prompt cache only
 discounts a byte-identical prefix, so the text is short and fixed for the whole
 run: nothing in it changes between steps (no ticking clock, no counter). Blocks
 go from the most stable (engine preamble) to the least: the limits of this one
-agent, then the moment it started, which differs on every run and so goes last.
+agent, then the date it started, which changes from day to day and so goes last.
 """
 
 from __future__ import annotations
@@ -180,7 +180,8 @@ def build_system(
     described. ``base`` resolves relative paths in ``instructions.files``
     (the project root; ``cwd`` when not given). ``root`` is false for a
     spawned agent. ``now`` is the moment the agent starts (the local time
-    when not given); it is written once and never updated.
+    when not given). Only its date is written, so every agent started on the
+    same day gets the same bytes, and it is never updated.
     """
     texts = [_preamble(policy, cwd, tools)]
     if role.instructions:
@@ -194,8 +195,8 @@ def build_system(
         texts.append(_limits(policy, role, tools))
     started = (now or datetime.now()).astimezone()
     texts.append(
-        f"You started on {started:%A %Y-%m-%d} at {started:%H:%M} (UTC{started:%z}). "
-        "This line is not updated: after long work, ask the system for the time."
+        f"You started on {started:%A %Y-%m-%d}. This line is not updated: ask the system when the "
+        "exact date or time matters."
     )
     """The vendor joins system blocks with nothing in between, so each block must end its own
     paragraph. Without this the working folder ran into the first word of the next block, and

@@ -600,7 +600,8 @@ def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     at = datetime(2026, 11, 23, 9, 5, tzinfo=timezone.utc)
     texts = build_system(policy, role, folder, tools, now=at)
     assert texts == build_system(policy, role, folder, tools, now=at)
-    assert texts[-1].startswith("You started on Monday 2026-11-23 at ")
+    assert texts[-1].startswith("You started on Monday 2026-11-23. ")
+    assert texts == build_system(policy, role, folder, tools, now=at.replace(hour=17, minute=40))
     assert texts[:-1] == build_system(policy, role, folder, tools, now=at.replace(year=2027))[:-1]
     texts = texts[:-1]
     assert all(text.endswith("\n\n") for text in texts)
