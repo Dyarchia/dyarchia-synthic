@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import difflib
 import os
-from pathlib import Path
 from typing import Any
 
-from ..sandbox import of, write_atomic
+from ..sandbox import of
 from ..types import ToolContext, ToolOutput
 
 BOM = b"\xef\xbb\xbf"
@@ -41,14 +40,6 @@ def _excerpt(text: str, start: int, length: int) -> str:
     low, high = max(0, first - CONTEXT_LINES), min(len(lines), last + CONTEXT_LINES + 1)
     width = len(str(high))
     return "\n".join(f"{n + 1:>{width}}  {lines[n]}" for n in range(low, high))
-
-
-def apply_edit(target: Path, old: str, new: str, replace_all: bool) -> str:
-    """Perform one edit on disk and return the success message, or raise ``EditError``."""
-    raw = target.read_bytes() if target.exists() else None
-    data, message = edit_bytes(raw, old, new, replace_all, str(target))
-    write_atomic(target, data)
-    return message
 
 
 def edit_bytes(raw: bytes | None, old: str, new: str, replace_all: bool, target: str) -> tuple[bytes, str]:

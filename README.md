@@ -218,7 +218,8 @@ mounts = { "/ref" = "C:/data/reference" }
 
 - One container per run, shared by every agent of the run (they all work in the project folder, as with
   `in_place`). `sh`, background jobs, `[verify]` commands and the file access of `edit` and `view` happen inside
-  it. Hooks, MCP servers and plugins still run on the host.
+  it. Hooks, MCP servers and plugins still run on the host, and `plugins.path` folders and skill files are host
+  paths the container cannot see.
 - Mounts: the project read-write at `workdir` (`/workspace`), the memory folder at `/synthic/memory` when memory
   is on, and each of `mounts` read-only. Nothing else of the host is visible. The image needs `sh`.
 - Environment: only `environment.env` and the host variables named in `pass_env`, given as `-e NAME` so no value
@@ -250,11 +251,12 @@ synthic rewind [run-id] --to 3 [--agent a1]
   record says the file was new. `shell`: before a turn that runs `sh`, when the working folder is in a git work
   tree, a git tree of it (tracked and untracked files git does not ignore) is written with a private index: the
   repository's index, branches and stash are not touched, and its object store gains blobs that `git gc` later
-  drops. The run folder is never captured. Both are `checkpoint` records with the agent's step number, shown by
-  `synthic show`. Off by default.
+  drops. The journal folder is never captured. Both are `checkpoint` records with the agent's step number, shown
+  by `synthic show`. Off by default.
 - `rewind` undoes, newest first, every checkpoint after step `STEP` (default 0: everything): edited files get
-  their bytes back, created ones are deleted, and a git checkpoint puts the working folder back to its tree,
-  deleting files git does not ignore that the tree does not hold. Steps are the root's (children's checkpoints
+  their bytes back, created ones are deleted, and a git checkpoint puts the working folder back to its tree: the
+  files that differ are written back byte for byte (unless `.gitattributes` converts them), and files git does
+  not ignore that the tree does not hold are deleted. Steps are the root's (children's checkpoints
   count from the moment the root's next step began), or one agent's own with `--agent`. It refuses a live run.
 - Not covered: what `sh` changes outside a git work tree or in ignored files, what a background job changes
   between two turns, `[verify]` commands, hooks, MCP servers, files that only existed in the Docker container, and

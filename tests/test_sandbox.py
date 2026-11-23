@@ -85,6 +85,9 @@ def test_a_symlink_out_of_the_mount_is_followed_inside_the_container(tmp_path: P
         pytest.skip("symlinks need extra rights on this system")
     sandbox = DockerSandbox(EnvironmentSettings(mode="docker", docker=DockerSettings(image=IMAGE)), root, tmp_path, "r")
     assert sandbox.locate("link.txt", root).host is None
+    (root / "plain.txt").write_text("kept", encoding="utf-8")
+    listed = asyncio.run(sandbox.files(sandbox.locate(".", root), 1000))
+    assert [name for name, _ in listed] == ["plain.txt"]
 
 
 def test_a_run_works_inside_the_container(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

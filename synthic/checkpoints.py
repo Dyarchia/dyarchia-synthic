@@ -13,19 +13,22 @@ Off unless the ``[checkpoints]`` policy turns it on. Two kinds of record, both
   index, which leaves the repository's own index, branches and stash alone.
   Its blobs go into the repository's object store, where git's garbage
   collection drops them once unreferenced and old. A tree equal to the last one
-  is not recorded again.
+  is not recorded again. The journal folder is never part of it.
 
 ``rewind`` undoes every checkpoint after the chosen step, newest first: an
 edit gets its previous bytes back (or its file deleted), a git checkpoint puts
-the working folder back to its tree: files are rewritten from it, and files
-git does not ignore that it does not hold are deleted.
+the working folder back to its tree: the files that differ are written back,
+byte for byte, and files git does not ignore that the tree does not hold are
+deleted.
 
 Not covered: files changed by ``sh`` when the folder is not a git work tree,
 or files git ignores; changes a background job makes after its turn, between
 two snapshots; ``[verify]`` commands, hooks and MCP servers; files that only
 exist inside the Docker container, which is gone when the run ends; anything
-outside the machine (a Salesforce org, a pushed branch, a sent message). A
-resumed agent is not told about a rewind: say it in the resume message.
+outside the machine (a Salesforce org, a pushed branch, a sent message); the
+byte-exactness of files that ``.gitattributes`` converts (``text``, ``eol``,
+filters such as LFS). A resumed agent is not told about a rewind: say it in the
+resume message.
 """
 
 from __future__ import annotations
@@ -86,71 +89,90 @@ class Recorder:
         self.journal.append("checkpoint", data)
 
     async def snapshot(self, cwd: Path) -> None:
-        """Record a git tree of the working folder, when it is in a work tree and changed since the last one."""
+        """Record a git tree of the working folder, when it is in a work tree and changed since the last one.
+
+        The private index lives in the agent's checkpoint folder and is kept:
+        the first snapshot hashes every file, later ones only what changed
+        since (git's stat cache). It is never seeded from the repository's
+        index, whose blobs went through the repository's line-ending rules, so
+        every blob holds the bytes on disk (``RAW``).
+        """
         code, top = await _git("rev-parse", "--show-toplevel", cwd=cwd)
         if code != 0 or not top:
             return
-        code, index = await _git("rev-parse", "--path-format=absolute", "--git-path", "index", cwd=cwd)
         self.folder.mkdir(parents=True, exist_ok=True)
-        private = self.folder / "index"
-        if code == 0 and Path(index).is_file():
-            shutil.copyfile(index, private)
-        else:
-            private.unlink(missing_ok=True)
-        env = {**base_env(), "GIT_INDEX_FILE": str(private)}
-        """The run folder is left out when it lies in the work tree: its journals must never be
-        captured, and a rewind must never delete them."""
-        run_dir, top_dir = self.journal.dir.parent.resolve(), Path(top).resolve()
-        exclude = run_dir.relative_to(top_dir).as_posix() if run_dir.is_relative_to(top_dir) else None
-        spec = [".", f":(exclude,top){exclude}"] if exclude else ["."]
-        try:
-            if (await _git("add", "-A", "--", *spec, cwd=cwd, env=env))[0] != 0:
-                return
-            code, tree = await _git("write-tree", cwd=cwd, env=env)
-        finally:
-            private.unlink(missing_ok=True)
+        env = {**base_env(), "GIT_INDEX_FILE": str(self.folder / "index")}
+        prefix = Path(cwd).resolve().relative_to(Path(top).resolve()).as_posix()
+        exclude = _journal_scope(self.journal.dir.parent.parent, Path(top))
+        if (await _git(*RAW, "add", "-A", "--", *_spec(prefix, exclude), cwd=Path(top), env=env))[0] != 0:
+            return
+        code, tree = await _git("write-tree", cwd=Path(top), env=env)
         if code != 0 or not tree or tree == self._last_tree:
             return
         self._last_tree = tree
-        prefix = Path(cwd).resolve().relative_to(Path(top).resolve()).as_posix()
         data = {"kind": "git", "step": self._step(), "tree": tree, "top": top, "prefix": prefix, "exclude": exclude}
         self.journal.append("checkpoint", data)
+
+
+RAW = ("-c", "core.autocrlf=false", "-c", "core.safecrlf=false")
+"""Git settings that keep blobs and restored files byte for byte what was on disk; ``.gitattributes``
+rules (``text``, ``eol``, filters such as LFS) still apply, both ways."""
+
+
+def _journal_scope(base: Path, top: Path) -> str | None:
+    """The journal folder (every run of ``journal.dir``) relative to the work tree, when it lies inside it:
+    journals must never be captured, and a rewind must never delete them."""
+    base, top = base.resolve(), top.resolve()
+    return base.relative_to(top).as_posix() if base.is_relative_to(top) else None
+
+
+def _spec(prefix: str, exclude: str | None) -> list[str]:
+    return [prefix, f":(exclude,top){exclude}"] if exclude else [prefix]
 
 
 def _run_git(args: list[str], top: str, env: Mapping[str, str] | None = None, data: bytes | None = None) -> bytes:
     done = subprocess.run(["git", *args], cwd=top, env=dict(env) if env else None, input=data, capture_output=True)
     if done.returncode != 0:
-        raise RuntimeError(f"git {args[0]} failed: {done.stderr.decode('utf-8', 'replace').strip()}")
+        raise RuntimeError(f"git failed: {done.stderr.decode('utf-8', 'replace').strip()}")
     return done.stdout
 
 
-def _names(raw: bytes) -> list[str]:
-    return [name for name in raw.decode("utf-8", "replace").split("\0") if name]
-
-
 def _restore_tree(record: Record, scratch: Path, apply: bool) -> list[str]:
-    """Put the folder of a git checkpoint back to its tree; the lines say what changed (or would)."""
+    """Put the folder of a git checkpoint back to its tree, touching only the files that differ.
+
+    The folder as it is now becomes a tree too (from a copy of the agent's
+    private index, so only changed files are hashed); ``diff-tree`` between
+    the two names what to write back and what to delete.
+    """
     top, tree, prefix = record.data["top"], record.data["tree"], record.data["prefix"]
-    scope = prefix if prefix != "." else "."
-    wanted = _names(_run_git(["ls-tree", "-r", "-z", "--name-only", tree, "--", scope], top))
-    present = _names(_run_git(["ls-files", "-z", "-co", "--exclude-standard", "--", scope], top))
-    exclude = record.data.get("exclude")
-
-    def kept(name: str) -> bool:
-        return bool(exclude) and (name == exclude or name.startswith(f"{exclude}/"))
-
-    extra = sorted(name for name in set(present) - set(wanted) if not kept(name))
-    lines = [f"restore {len(wanted)} files of tree {tree[:12]} under {prefix}"]
-    lines += [f"delete {name}" for name in extra]
+    spec = _spec(prefix, record.data.get("exclude"))
+    current_index = scratch / "rewind-now"
+    if (scratch / "index").is_file():
+        shutil.copyfile(scratch / "index", current_index)
+    env = {**base_env(), "GIT_INDEX_FILE": str(current_index)}
+    try:
+        _run_git([*RAW, "add", "-A", "--", *spec], top, env)
+        now = _run_git(["write-tree"], top, env).decode("utf-8").strip()
+    finally:
+        current_index.unlink(missing_ok=True)
+    fields = _run_git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", now, tree, "--", prefix], top)
+    parts = [p for p in fields.decode("utf-8", "replace").split("\0") if p]
+    changes = list(zip(parts[::2], parts[1::2]))
+    restore = sorted(path for status, path in changes if status != "D")
+    delete = sorted(path for status, path in changes if status == "D")
+    lines = [f"restore {path}" for path in restore] + [f"delete {path}" for path in delete]
+    if apply and restore:
+        target_index = scratch / "rewind-target"
+        env = {**base_env(), "GIT_INDEX_FILE": str(target_index)}
+        try:
+            _run_git(["read-tree", tree], top, env)
+            _run_git([*RAW, "checkout-index", "-f", "-z", "--stdin"], top, env, "\0".join(restore).encode("utf-8"))
+        finally:
+            target_index.unlink(missing_ok=True)
     if apply:
-        index = scratch / "rewind-index"
-        env = {**base_env(), "GIT_INDEX_FILE": str(index)}
-        _run_git(["read-tree", tree], top, env)
-        _run_git(["checkout-index", "-f", "-z", "--stdin"], top, env, "\0".join(wanted).encode("utf-8"))
-        index.unlink(missing_ok=True)
-        for name in extra:
-            (Path(top) / name).unlink(missing_ok=True)
-    return lines
+        for path in delete:
+            (Path(top) / path).unlink(missing_ok=True)
+    return lines or [f"nothing differs from tree {tree[:12]}"]
 
 
 def _restore_edit(record: Record, folder: Path, apply: bool) -> str:

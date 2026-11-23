@@ -125,12 +125,13 @@ def _git_names(base: Path) -> list[str] | None:
     return [name for name in done.stdout.decode("utf-8", "replace").split("\0") if name]
 
 
-def host_files(base: Path, max_bytes: int) -> Iterator[tuple[str, bytes | None]]:
+def host_files(base: Path, max_bytes: int, inside: Path | None = None) -> Iterator[tuple[str, bytes | None]]:
     """``(relative posix name, content)`` of every file under ``base`` (``""`` when ``base`` is a file), sorted.
 
     Inside a git work tree only the files git does not ignore, else every file
     but those under ``.git``. Content is ``None`` for a file over ``max_bytes``.
-    Lazy, so a caller that stops early reads no more.
+    With ``inside``, a file whose real path leaves that folder (a symlink out of
+    a mount) is skipped. Lazy, so a caller that stops early reads no more.
     """
     if base.is_file():
         yield "", _capped(base, max_bytes)
@@ -143,8 +144,11 @@ def host_files(base: Path, max_bytes: int) -> Iterator[tuple[str, bytes | None]]
             names += [(Path(folder) / f).relative_to(base).as_posix() for f in files]
     for name in sorted(set(names)):
         path = base / name
-        if path.is_file():
-            yield name, _capped(path, max_bytes)
+        if not path.is_file():
+            continue
+        if inside is not None and not path.resolve().is_relative_to(inside):
+            continue
+        yield name, _capped(path, max_bytes)
 
 
 def _capped(path: Path, max_bytes: int) -> bytes | None:
@@ -354,7 +358,8 @@ class DockerSandbox:
         """Files under a mount come from the host side (``host_files``); others from a ``tar`` of the folder,
         cut at ``MAX_TREE_BYTES``."""
         if location.host is not None:
-            return host_files(location.host, max_bytes)
+            mount = next((host for _, host, _ in self.mounts if location.host.is_relative_to(host)), location.host)
+            return host_files(location.host, max_bytes, inside=mount)
         if not await self.is_dir(location):
             return iter([("", await self.read(location))])
         code, out, err = await self._exec(f'cd "$1" && tar -cf - . | head -c {MAX_TREE_BYTES}', location.shown)
@@ -472,7 +477,9 @@ class DockerSandbox:
             return
         for line in out.decode("utf-8", "replace").splitlines():
             name, _, folder = line.partition("\t")
-            if name and name != self.name and folder and not is_alive(Path(folder)):
+            """Only a run folder this host can see and whose heartbeat stopped proves an orphan: a run
+            started from another machine, user or WSL has a folder this process cannot judge."""
+            if name and name != self.name and folder and Path(folder).is_dir() and not is_alive(Path(folder)):
                 await self._docker("rm", "-f", name)
 
     async def close(self) -> None:

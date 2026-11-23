@@ -61,15 +61,19 @@ def test_git_snapshots_undo_what_sh_changed_without_touching_the_index(tmp_path:
     folder = project(tmp_path)
     if subprocess.run(["git", "init", "-q"], cwd=folder, capture_output=True).returncode != 0:
         pytest.skip("git is not available")
-    (folder / "t.txt").write_text("tracked\n", encoding="utf-8")
+    (folder / "t.txt").write_bytes(b"tracked\n")
+    (folder / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+    (folder / "mixed.txt").write_bytes(b"a\nb\r\n")
     (folder / ".gitignore").write_text("ignored.log\n", encoding="utf-8")
-    git(folder, "add", "-A")
+    git(folder, "-c", "core.autocrlf=true", "add", "-A")
     git(folder, "commit", "-q", "-m", "start")
     runtime, result, _ = go(
         tmp_path,
         [
-            reply(tool_use("sh", {"command": "echo changed > t.txt; echo new > c.txt; echo log > ignored.log"})),
-            reply(tool_use("sh", {"command": "rm t.txt"})),
+            reply(
+                tool_use("sh", {"command": "echo changed > t.txt; echo new > c.txt; echo log > ignored.log; rm crlf.txt"})
+            ),
+            reply(tool_use("sh", {"command": "rm t.txt mixed.txt"})),
             reply(tool_use("sh", {"command": "true"})),
             done(),
         ],
@@ -79,13 +83,18 @@ def test_git_snapshots_undo_what_sh_changed_without_touching_the_index(tmp_path:
     marks = [r["data"] for r in records(runtime) if r["kind"] == "checkpoint"]
     assert [m["step"] for m in marks] == [1, 2, 3] and all(m["kind"] == "git" for m in marks)
     assert git(folder, "diff", "--cached", "--name-only") == "" and git(folder, "stash", "list") == ""
-    rewind(runtime.run_dir, 1)
-    assert (folder / "t.txt").read_text(encoding="utf-8").strip() == "changed"
-    assert (folder / "c.txt").exists()
+    lines = rewind(runtime.run_dir, 1)
+    assert lines == [
+        f"root step 3: nothing differs from tree {marks[2]['tree'][:12]}",
+        "root step 2: restore mixed.txt",
+        "root step 2: restore t.txt",
+    ]
+    assert (folder / "t.txt").read_bytes().strip() == b"changed" and (folder / "c.txt").exists()
     rewind(runtime.run_dir, 0)
-    assert (folder / "t.txt").read_text(encoding="utf-8") == "tracked\n"
+    assert (folder / "t.txt").read_bytes() == b"tracked\n"
+    assert (folder / "crlf.txt").read_bytes() == b"one\r\ntwo\r\n" and (folder / "mixed.txt").read_bytes() == b"a\nb\r\n"
     assert not (folder / "c.txt").exists() and (folder / "ignored.log").exists()
-    assert not (runtime.run_dir / "root" / "checkpoints" / "index").exists()
+    assert not (runtime.run_dir / "root" / "checkpoints" / "rewind-now").exists()
 
 
 def test_a_run_folder_inside_the_work_tree_is_never_captured_or_deleted(tmp_path: Path) -> None:
