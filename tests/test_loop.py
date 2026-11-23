@@ -21,7 +21,7 @@ from synthic.context import Context, ReceiptStore
 from synthic.journal import JOURNAL_FILE
 from synthic.loop import UNKNOWN_OUTCOME, AgentResult
 from synthic.policy import Level, LoadedPolicy, factory_defaults, merge_levels
-from synthic.prompt import build_system
+from synthic.prompt import build_system, memory_dir
 from synthic.testing import ScriptedProvider, reply, text, tool_use
 from synthic.types import (
     HookOutcome,
@@ -829,3 +829,21 @@ def test_stop_cuts_a_slow_hook_and_an_interrupted_gate_does_not_deliver(tmp_path
     assert time.monotonic() - began < 5
     assert result.status == "stopped"
     assert any(r["kind"] == "hook" and r["data"]["event"] == "before_done" for r in records(runtime))
+
+
+def test_memory_is_read_once_and_kept_outside_the_repository(tmp_path: Path) -> None:
+    folder = project(tmp_path)
+    policy = make_policy(tmp_path, {"memory": {"dir": str(tmp_path / "mem"), "max_chars": 20}}).policy
+    role = policy.roles["lead"]
+    home = memory_dir(policy, folder)
+    assert home.parent == tmp_path / "mem" and home.name.startswith("proj-")
+    assert folder not in home.parents
+    writer = "".join(build_system(policy, role, folder, ["done", "sh", "edit"]))
+    assert f"Memory folder: {home}" in writer and "no MEMORY.md yet" in writer and "Before `done`" in writer
+    assert "Memory folder" not in "".join(build_system(policy, role, folder, ["done", "sh"]))
+    home.mkdir(parents=True)
+    (home / "MEMORY.md").write_text("Deploy with the alias dev." + "x" * 40, encoding="utf-8")
+    reader = "".join(build_system(policy, role, folder, ["done", "sh"]))
+    assert "Deploy with the ali" in reader and "MEMORY.md is too long" in reader and "Before `done`" not in reader
+    off = make_policy(tmp_path, {"memory": {"enabled": False}}).policy
+    assert "Memory folder" not in "".join(build_system(off, role, folder, ["done", "sh", "edit"]))

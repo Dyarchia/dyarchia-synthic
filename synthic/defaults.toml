@@ -51,12 +51,14 @@ fallback = "opus"
 model = "haiku"
 effort = "low"
 tools = ["sh"]
+instructions = "Answer in `done` with facts only, one per line, each with its `path:line`. No preamble and no account of how you searched."
 
 [role.mechanic]
 model = "haiku"
 effort = "low"
 tools = ["sh", "edit"]
 on_failure = { escalate_to = "build", attempts = 2 }
+instructions = "Answer in `done` with one line per file changed and one line on how you checked it. Nothing else."
 
 [role.build]
 model = "opus"
@@ -86,9 +88,17 @@ clean_after_seconds = 300
 clean_keep_recent = 6
 clean_min_chars = 600
 compact_at = 0.85
+compact_keep_turns = 2
+compact_keep_chars = 24000
+compact_boundary_tokens = 80000
 
 [journal]
 dir = "~/.synthic/runs"
+
+[memory]
+enabled = true
+dir = "~/.synthic/memory"
+max_chars = 8000
 
 [environment]
 mode = "in_place"

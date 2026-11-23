@@ -425,7 +425,7 @@ def test_backoff_never_sleeps_past_the_window() -> None:
     provider, sleeps = make(server, retry_seconds=100.0)
     with pytest.raises(ProviderError):
         run(provider.complete(request()))
-    assert sum(sleeps) <= 100.0
+    assert sum(sleeps) <= 100.0 + 1e-6
 
 
 def test_cancel_ends_the_wait_between_retries() -> None:

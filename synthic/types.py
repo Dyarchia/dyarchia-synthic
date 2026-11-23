@@ -269,6 +269,9 @@ class ContextSettings:
     clean_keep_recent: int = 6
     clean_min_chars: int = 600
     compact_at: float = 0.85
+    compact_keep_turns: int = 2
+    compact_keep_chars: int = 24000
+    compact_boundary_tokens: int = 80000
     compaction_template: str | None = None
 
 
@@ -277,6 +280,20 @@ class JournalSettings:
     dir: str = "~/.synthic/runs"
     retention_days: int | None = None
     mask: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MemorySettings:
+    """Notes the agent keeps between runs, one folder per project under ``dir``.
+
+    ``MEMORY.md`` of that folder is read once when an agent starts and enters
+    its system prompt, cut at ``max_chars``. The agent keeps the folder up to
+    date with its ordinary ``edit`` tool.
+    """
+
+    enabled: bool = True
+    dir: str = "~/.synthic/memory"
+    max_chars: int = 8000
 
 
 @dataclass(frozen=True)
@@ -360,6 +377,7 @@ class Policy:
     human: HumanPolicy = HumanPolicy()
     context: ContextSettings = ContextSettings()
     journal: JournalSettings = JournalSettings()
+    memory: MemorySettings = MemorySettings()
     environment: EnvironmentSettings = EnvironmentSettings()
     provider: ProviderSettings = ProviderSettings()
     instructions: InstructionSettings = InstructionSettings()
@@ -392,7 +410,7 @@ class Record:
       where ``content`` is exactly what entered the context; ``name`` is empty
       for a call answered by a repair (interrupted or dead process)
     * ``clean``: ``{call_ids}`` tool results replaced by their receipt stub
-    * ``compaction``: ``{summary}`` history replaced by this summary
+    * ``compaction``: ``{summary, keep}`` history replaced by this summary plus its last ``keep`` messages
     * ``spawn``: ``{child_id, role, task}``
     * ``child_done``: ``{child_id, status, summary}``
     * ``question``: ``{question_id, text, assumption}``

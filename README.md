@@ -80,6 +80,18 @@ expressions (Python `re` syntax), not globs, and a pattern that does not compile
 With `environment.mode = "copy"`, each child works in a copy, on the git branch
 `synthic/<run_id>/<agent_id>`.
 
+## Context and memory
+
+- **Compaction** replaces the history with a summary the model writes from a template
+  (`context.compaction_template`, yours to replace). It keeps the newest `compact_keep_turns` turns as
+  they are, up to `compact_keep_chars`. It runs when the prompt reaches `compact_at` of the context
+  window, and also between two tasks: a new text given to `resume` on a delivered run compacts the
+  finished task first when its prompt had reached `compact_boundary_tokens` (0 turns this off).
+- **Memory** is one folder per project under `memory.dir` (default `~/.synthic/memory`), never inside
+  the repository. Its `MEMORY.md` is read once when an agent starts, cut at `memory.max_chars`, and an
+  agent with `edit` is told to keep it short and current before it delivers. `memory.enabled = false`
+  turns it off.
+
 ## Interrupting a run
 
 From the same terminal (when stdin is a terminal), type a line while the run goes:
@@ -122,7 +134,8 @@ synthic resume [run-id] "now also update the docs"
 
 `resume` continues a run that was stopped or cut by a crash, with the same options and interrupts as
 `run`. A run that ended (delivered, failed or budget) is continued only when you give a text, which
-enters as a new message from you; without one it just shows its recorded result. The run id may be
+enters as a new message from you; without one it just shows its recorded result. Giving the next task this way
+keeps one session and lets the engine compact the finished task (see Context and memory). The run id may be
 omitted (the most recent run is used); a word shaped like a run id that matches no run is an error, not
 text. A run that is alive in another process is refused.
 

@@ -12,7 +12,9 @@ for as long as the cache stays warm. Everything here follows from that:
 * When the cache has already expired (more than ``clean_after_seconds`` and
   the cache TTL since the last call), the next call is paid in full whatever we send, so that is
   the one moment when shrinking old tool results costs nothing extra.
-* Compaction replaces the history with a summary only as a last resort.
+* Compaction replaces the history with a summary, keeping the newest turns as
+  they are. It runs when the context is nearly full, and between two tasks of
+  one session once the prompt is large enough to be worth it.
 
 History blocks are kept in the provider's native shape (see ``types.py``).
 """
@@ -471,15 +473,57 @@ class Context:
         path = Path(template).expanduser() if template else _COMPACTION_TEMPLATE
         return path.read_text(encoding="utf-8")
 
-    def apply_compaction(self, summary: str) -> None:
+    def restore_measure(self, prompt_tokens: int) -> None:
+        """Tell a rebuilt context how large its prompt was on the last call of the run it continues."""
+        self._last_prompt_tokens = prompt_tokens
+
+    def boundary_due(self) -> bool:
+        """True when a finished task leaves a prompt of at least ``compact_boundary_tokens`` (0 turns it off).
+
+        Between two tasks nothing is in flight, so a summary loses the least
+        there, and the new task then starts on a short prompt instead of
+        paying for the whole finished one on every step.
+        """
+        limit = self._settings.compact_boundary_tokens
+        return limit > 0 and self._last_prompt_tokens >= limit
+
+    def compaction_keep(self) -> int:
+        """How many messages at the end of the history a compaction keeps as they are.
+
+        The newest ``compact_keep_turns`` assistant turns with their results,
+        fewer when they exceed ``compact_keep_chars``. 0 when nothing would be
+        left to summarize before them.
+        """
+        s = self._settings
+        starts = [i for i, m in enumerate(self._messages) if m["role"] == "assistant"]
+        for start in starts[-s.compact_keep_turns :] if s.compact_keep_turns > 0 else []:
+            chars = sum(_block_chars(b) for m in self._messages[start:] for b in m["content"])
+            if start > 1 and chars <= s.compact_keep_chars:
+                return len(self._messages) - start
+        return 0
+
+    def apply_compaction(self, summary: str, keep: int = 0) -> None:
+        """Replace the history with ``summary``, followed by its last ``keep`` messages as they were.
+
+        The kept messages lose their thinking blocks: their prefix changed, and
+        thinking bound to another prefix is rejected (see ``clean_if_cold``).
+        A pure function of the history, ``summary`` and ``keep``, so a replay
+        gives the same bytes.
+        """
+        tail = self._messages[-keep:] if keep > 0 else []
+        follows = " The most recent steps follow it unchanged." if tail else ""
         text = (
             "[Summary of earlier work. The conversation before this point was replaced by this summary "
             "to save context. Every receipt it mentions (r1, r2, ...) is still stored: search it or read "
-            "a line range with the receipt tool.]\n\n" + summary
+            f"a line range with the receipt tool.{follows}]\n\n" + summary
         )
-        self._messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
-        self._receipt_of.clear()
-        self._cleaned.clear()
+        self._messages = [{"role": "user", "content": [{"type": "text", "text": text}]}, *tail]
+        self._strip_thinking(0)
+        alive = {
+            b["tool_use_id"] for m in self._messages for b in m["content"] if b["type"] == "tool_result"
+        }
+        self._receipt_of = {c: r for c, r in self._receipt_of.items() if c in alive}
+        self._cleaned &= alive
         self._chars_at_call = 0
 
     def repair_dangling(self, reason: str) -> list[ToolResultEntry]:
@@ -518,7 +562,9 @@ class Context:
                 case "clean":
                     self._clean(list(data["call_ids"]))
                 case "compaction":
-                    self.apply_compaction(data["summary"])
+                    self.apply_compaction(data["summary"], data.get("keep", 0))
+                case "resume":
+                    self._strip_thinking(-1)
 
 
 class ReceiptTool:

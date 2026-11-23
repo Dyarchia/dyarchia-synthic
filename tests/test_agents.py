@@ -466,11 +466,13 @@ def stopped_run(tmp_path: Path) -> Runtime:
     return asyncio.run(main())
 
 
-def resume_run(tmp_path: Path, run_id: str, script: list[Any], text: str | None = None) -> tuple[AgentResult, Any]:
+def resume_run(
+    tmp_path: Path, run_id: str, script: list[Any], text: str | None = None, task: dict[str, Any] | None = None
+) -> tuple[AgentResult, Any]:
     provider = ScriptedProvider(script)
 
     async def main() -> AgentResult:
-        runtime = Runtime(make_policy(tmp_path), project(tmp_path), provider, run_id=run_id)
+        runtime = Runtime(make_policy(tmp_path, task), project(tmp_path), provider, run_id=run_id)
         try:
             return await runtime.resume(text)
         finally:
@@ -550,3 +552,26 @@ def test_ledger_caps_and_warnings() -> None:
     now[0] = 3600.0
     assert ledger.check("b") == "budget.wall_clock_hours"
     assert Ledger(Budget(wall_clock_hours=1.0), elapsed=3600.0).check() == "budget.wall_clock_hours"
+
+
+def test_a_new_task_on_a_delivered_run_compacts_the_finished_one_first(tmp_path: Path) -> None:
+    big = Usage(input_tokens=900, output_tokens=10, cost_usd=0.001)
+    rules = {"context": {"compact_boundary_tokens": 500}}
+    look = tool_use("receipt", {"id": "r1"})
+    script = [reply(look, usage=big), reply(look, usage=big), reply(tool_use("done", {"summary": "One."}), usage=big)]
+    first, result, _ = go(tmp_path, script, rules)
+    assert result.status == "delivered" and "compaction" not in kinds(first)
+    summary = reply(text("## Task" + chr(10) + "First task is finished."))
+    result, provider = resume_run(tmp_path, first.run_id, [summary, done("Two.")], "Second task.", rules)
+    assert result.summary == "Two."
+    assert "Use exactly these sections" in json.dumps(provider.requests[0].messages[-1])
+    after = provider.requests[1].messages
+    assert after[0]["content"][0]["text"].startswith("[Summary of earlier work")
+    assert "follow it unchanged" in after[0]["content"][0]["text"]
+    assert [m["role"] for m in after] == ["user", "assistant", "user", "assistant", "user"]
+    assert after[-1]["content"][-1] == text("Second task.")
+    compactions = [r["data"] for r in records(first) if r["kind"] == "compaction"]
+    assert [c["keep"] for c in compactions] == [4]
+    small, provider = resume_run(tmp_path, first.run_id, [done("Three.")], "Third task.", rules)
+    assert small.summary == "Three." and len(provider.requests) == 1
+    assert provider.requests[0].messages[0] == after[0]

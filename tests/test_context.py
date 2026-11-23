@@ -512,3 +512,55 @@ def test_drop_thinking_removes_every_thinking_block(tmp_path: Path) -> None:
     assert [m["role"] for m in after] == ["user", "assistant", "user", "assistant", "user"]
     assert after[2]["content"] == before[2]["content"] + before[4]["content"]
     assert_valid(after)
+
+
+def test_compaction_keeps_the_newest_turns_without_thinking_and_replays(tmp_path: Path) -> None:
+    d = Driver(tmp_path, replace(SETTINGS, compact_keep_turns=1, compact_keep_chars=10_000))
+    d.user("task")
+    d.assistant("c1")
+    d.results({"c1": big("first")})
+    d.assistant("c2")
+    d.results({"c2": big("second")})
+    keep = d.ctx.compaction_keep()
+    assert keep == 2
+    d.ctx.apply_compaction("summary", keep)
+    d.log("compaction", {"summary": "summary", "keep": keep})
+    messages = d.ctx.build()[1]
+    assert_valid(messages)
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert "follow it unchanged" in messages[0]["content"][0]["text"]
+    assert [b["type"] for b in messages[1]["content"]] == ["tool_use"]
+    assert messages[2]["content"][0]["tool_use_id"] == "c2"
+    assert dump(d.replayed()) == dump(d.ctx)
+    d.clock.now += SETTINGS.clean_after_seconds + 1
+    d.assistant("c3")
+    d.results({"c3": big("third")})
+    d.clock.now += SETTINGS.clean_after_seconds + 1
+    assert d.clean() == ["c2"]
+    assert dump(d.replayed()) == dump(d.ctx)
+
+
+def test_compaction_keeps_nothing_when_the_newest_turn_is_too_large_or_alone(tmp_path: Path) -> None:
+    d = Driver(tmp_path, replace(SETTINGS, compact_keep_turns=2, compact_keep_chars=50))
+    d.user("task")
+    d.assistant("c1")
+    d.results({"c1": big("first")})
+    assert d.ctx.compaction_keep() == 0
+    d.assistant("c2")
+    d.results({"c2": big("second")})
+    assert d.ctx.compaction_keep() == 0
+    roomy = Driver(tmp_path / "b", replace(SETTINGS, compact_keep_turns=2, compact_keep_chars=10_000))
+    roomy.user("task")
+    roomy.assistant("c1")
+    roomy.results({"c1": "ok"})
+    assert roomy.ctx.compaction_keep() == 0
+
+
+def test_boundary_is_due_only_above_the_token_limit(tmp_path: Path) -> None:
+    d = Driver(tmp_path, replace(SETTINGS, compact_boundary_tokens=500))
+    assert not d.ctx.boundary_due()
+    d.ctx.restore_measure(500)
+    assert d.ctx.boundary_due()
+    off = Driver(tmp_path / "b", replace(SETTINGS, compact_boundary_tokens=0))
+    off.ctx.restore_measure(10_000)
+    assert not off.ctx.boundary_due()

@@ -289,6 +289,7 @@ class Agent:
         self._repeat_warned = False
         self._questions = itertools.count(1)
         self._resumed = False
+        self._next_task: str | None = None
 
     def _build_tools(self) -> dict[str, Tool]:
         """The fixed tool list: engine tools, then what the role grants. It never changes during the run (cache).
@@ -383,9 +384,17 @@ class Agent:
             advice = " Spawn it again if its work is still needed." if status == "cancelled" else ""
             self._add_user(f"[child {child_id} ({record.data['role']}) ended: {status}]\nSummary: {summary}{advice}", "engine")
         _, messages = self.context.build()
-        if text and text.strip():
+        end = ended(records)
+        if text and text.strip() and end is not None and end.data["status"] == "delivered":
+            """A new task for an agent that had delivered: a task boundary. The text waits for the first
+            step, which may compact the finished work before the new task enters the history."""
+            calls = [r for r in records if r.kind == "model_call" and "purpose" not in r.data]
+            if calls:
+                self.context.restore_measure(Usage(**calls[-1].data["usage"]).context_tokens)
+            self._next_task = text
+        elif text and text.strip():
             self._add_user(text, "human")
-        elif ended(records) is not None or (messages and messages[-1]["role"] == "assistant"):
+        elif end is not None or (messages and messages[-1]["role"] == "assistant"):
             self._add_user(
                 "[The human resumed this run after it was interrupted. Continue the task, or call `done` if it is "
                 "finished.]",
@@ -537,6 +546,11 @@ class Agent:
             await self._emit("budget_warning", warning=warning)
             self.runtime.output(self.id, "warning", warning)
             self._add_user(f"[budget] {warning}. Plan to finish within the budget.", "engine")
+        if self._next_task is not None:
+            text, self._next_task = self._next_task, None
+            if self.context.boundary_due() and (await self._emit("before_compaction")).action != "block":
+                await self._compact()
+            self._add_user(text, "human")
         self._deliver()
         self._model, self._next_model = self._next_model or self.role.model, None
         await self._maintain_context()
@@ -612,7 +626,8 @@ class Agent:
                 await self._compact()
 
     async def _compact(self) -> None:
-        """Ask the model for a summary with the same system, tools and extra (cache), then replace the history.
+        """Ask the model for a summary with the same system, tools and extra (cache), then replace the history
+        with it, keeping the newest turns as they are (``Context.compaction_keep``).
 
         The request text never enters the context; only the summary does. A
         summary counts only when the reply ended normally and has text: a reply
@@ -652,8 +667,9 @@ class Agent:
             return
         self._compact_retry_at = None
         summary = self.runtime.masker.mask(summary)
-        self.context.apply_compaction(summary)
-        self.journal.append("compaction", {"summary": summary})
+        keep = self.context.compaction_keep()
+        self.context.apply_compaction(summary, keep)
+        self.journal.append("compaction", {"summary": summary, "keep": keep})
 
     def _compaction_failed(self, warning: str) -> None:
         measured = self.context.last_prompt_tokens
