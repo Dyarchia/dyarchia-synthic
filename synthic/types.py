@@ -349,6 +349,12 @@ class ContextSettings:
     compact_keep_chars: int = 24000
     compact_boundary_tokens: int = 80000
     compaction_template: str | None = None
+    compact_background: bool = False
+    """Prepare the compaction summary in the background (see ``Agent._prepare``) instead of at the last moment."""
+    compact_prepare_at: float = 0.6
+    """Share of the context window at which the background summary is first prepared."""
+    compact_refresh_tokens: int = 50000
+    """Prompt growth, in tokens, after which a ready background summary is prepared again."""
 
 
 @dataclass(frozen=True)
@@ -546,7 +552,8 @@ class Record:
       ``{type: "base64", media_type, file}``: the data itself is stored once under ``receipts/media``
       and read back on replay (``context.pack`` and ``context.unpack``)
     * ``model_call``: ``{model_id, stop_reason, usage, cost_usd}``, plus
-      ``purpose: "compaction"`` for a call that is not a step of the loop
+      ``purpose`` for a call that is not a step of the loop: ``"compaction"``, or
+      ``"compaction_prepare"`` for a summary prepared in the background
     * ``fallback``: ``{from, to, reason}`` the next model call goes to the
       fallback model; the call after a successful one goes back to the role's model
     * ``assistant``: ``{content}`` the reply blocks as appended to history,

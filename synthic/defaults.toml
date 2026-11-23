@@ -91,6 +91,9 @@ compact_at = 0.85
 compact_keep_turns = 2
 compact_keep_chars = 24000
 compact_boundary_tokens = 80000
+compact_background = false
+compact_prepare_at = 0.6
+compact_refresh_tokens = 50000
 
 [journal]
 dir = "~/.synthic/runs"

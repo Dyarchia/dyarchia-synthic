@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -685,6 +686,24 @@ class Context:
             if start > 1 and chars <= s.compact_keep_chars and self._self_contained(start):
                 return len(self._messages) - start
         return 0
+
+    @property
+    def message_count(self) -> int:
+        return len(self._messages)
+
+    def fingerprint(self, count: int) -> str:
+        """A digest of the first ``count`` messages: equal digests mean that prefix is byte for byte the same."""
+        data = json.dumps(self._messages[:count], ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    def tail_from(self, start: int) -> int | None:
+        """How many messages a compaction keeps when a summary covers the first ``start``: ``None`` when the
+        message at ``start`` is not an assistant turn or the tail would split a server tool call."""
+        if start > len(self._messages):
+            return None
+        if start < len(self._messages) and self._messages[start]["role"] != "assistant":
+            return None
+        return len(self._messages) - start if self._self_contained(start) else None
 
     def _self_contained(self, start: int) -> bool:
         """Whether every server tool result from ``start`` on has its ``server_tool_use`` there too.

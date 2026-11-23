@@ -49,6 +49,7 @@ the results of the turn; from other events it is ignored.
 from __future__ import annotations
 
 import asyncio
+import copy
 import itertools
 import json
 import os
@@ -127,6 +128,16 @@ class AgentResult:
     steps: int
     changes: str = ""
     result: Any = None
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    """A background summary: its text, how many messages it covers, their digest, and the prompt it came from."""
+
+    summary: str
+    covered: int
+    fingerprint: str
+    tokens: int
 
 
 @dataclass(eq=False)
@@ -325,6 +336,9 @@ class Agent:
         self._limit_override: int | None = None
         self._last_limit = 0
         self._force_compact = False
+        self._prepared: _Prepared | None = None
+        self._preparing: asyncio.Task[None] | None = None
+        self._prepare_cancel = asyncio.Event()
         self._repeat: tuple[str, str] | None = None
         self._repeat_count = 0
         self._repeat_warned = False
@@ -488,6 +502,7 @@ class Agent:
             return await self._end()
         finally:
             self.running = False
+            await self._drop_prepared()
             await self._cancel_children()
             await self.jobs.close()
 
@@ -726,7 +741,13 @@ class Agent:
         "until it has grown" alone would retry at full price on every step;
         halving the remaining room spaces the retries out without a new knob.
         A compaction forced by an overflow ignores the hold.
+
+        A summary prepared in the background is used instead when there is a
+        valid one (``_use_prepared``), and any other is dropped afterwards.
         """
+        if await self._use_prepared():
+            return
+        await self._drop_prepared()
         spec = self.spec()
         system, messages = self.context.build()
         block = {"type": "text", "text": self.context.compaction_request()}
@@ -756,6 +777,92 @@ class Agent:
         keep = self.context.compaction_keep()
         self.context.apply_compaction(summary, keep)
         self.journal.append("compaction", {"summary": summary, "keep": keep})
+
+    def _maybe_prepare(self, request: ModelRequest, prompt_tokens: int) -> None:
+        """Start a background summary after a step, when ``context.compact_background`` asks for one now.
+
+        Due once the prompt reaches ``compact_prepare_at`` of the window, and
+        again each time it has grown ``compact_refresh_tokens`` past the prompt
+        a ready summary was made from; one at a time. The request is the one
+        this step just sent, with the compaction template appended to its last
+        user message, exactly as ``_compact`` builds it: its prefix is the one
+        this step wrote to the cache, and the docs say an entry can be read once
+        the response that wrote it has started, which it has
+        (https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+        Never while a server tool call is open: a text after it would be refused.
+        """
+        settings = self.policy.context
+        if not settings.compact_background or self._finish is not None:
+            return
+        if self._preparing is not None and not self._preparing.done():
+            return
+        if prompt_tokens < settings.compact_prepare_at * request.model.context_window:
+            return
+        ready = self._prepared
+        if ready is not None and self.context.fingerprint(ready.covered) != ready.fingerprint:
+            self._prepared = ready = None
+        if ready is not None and prompt_tokens - ready.tokens < settings.compact_refresh_tokens:
+            return
+        if not request.messages or request.messages[-1]["role"] != "user" or self.context.server_pending():
+            return
+        covered = len(request.messages)
+        if covered != self.context.message_count:
+            return
+        messages = copy.deepcopy(request.messages)
+        messages[-1]["content"].append({"type": "text", "text": self.context.compaction_request()})
+        summary_request = replace(request, messages=messages)
+        prepared = _Prepared("", covered, self.context.fingerprint(covered), prompt_tokens)
+        self._preparing = asyncio.get_running_loop().create_task(self._prepare(summary_request, prepared))
+
+    async def _prepare(self, request: ModelRequest, prepared: _Prepared) -> None:
+        """The background summary call. Its cost is in the ledger and the journal (``purpose``), used or not."""
+        try:
+            reply = await self.runtime.provider.complete(request, cancel=self._prepare_cancel)
+        except Exception as error:
+            self.runtime.output(self.id, "warning", f"background summary failed: {_short(str(error))}")
+            return
+        self._account(reply, purpose="compaction_prepare")
+        summary = "\n".join(b["text"] for b in reply.content if b.get("type") == "text").strip()
+        if reply.stop_reason in ENDED_NORMALLY and summary:
+            self._prepared = replace(prepared, summary=summary)
+
+    async def _use_prepared(self) -> bool:
+        """Swap in the background summary, keeping verbatim every message after the part it covers.
+
+        An unfinished one is waited for: it started earlier than a new call
+        would. It is valid only while the messages it covers are byte for byte
+        the ones it was made from (a clean, a compaction, a thinking strip or a
+        message merged into its last turn make it stale) and the tail starts at
+        an assistant turn that splits no server tool call. The ``compaction``
+        record is the same as a blocking compaction's, ``keep`` being the tail,
+        so replay rebuilds the history exactly; a summary not yet used when the
+        process dies is lost, its cost already counted.
+        """
+        if self._preparing is not None and not self._preparing.done():
+            await wait_any(asyncio.shield(self._preparing), self._cancel.wait())
+            if self._cancel.is_set():
+                return False
+        prepared, self._prepared = self._prepared, None
+        if prepared is None or self.context.fingerprint(prepared.covered) != prepared.fingerprint:
+            return False
+        keep = self.context.tail_from(prepared.covered)
+        if keep is None:
+            return False
+        self._compact_retry_at = None
+        summary = self.runtime.masker.mask(self._with_todo(prepared.summary))
+        self.context.apply_compaction(summary, keep)
+        self.journal.append("compaction", {"summary": summary, "keep": keep})
+        return True
+
+    async def _drop_prepared(self) -> None:
+        """Cancel a background summary in flight and forget a ready one (the agent ends, or compacts without it)."""
+        self._prepared = None
+        task, self._preparing = self._preparing, None
+        if task is not None and not task.done():
+            self._prepare_cancel.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._prepare_cancel = asyncio.Event()
 
     def _todo_changed(self, items: list[dict[str, str]]) -> None:
         self.journal.append("todo", {"items": items})
@@ -807,6 +914,7 @@ class Agent:
         self.steps += 1
         self.context.note_model_call(reply.usage)
         self._account(reply)
+        self._maybe_prepare(request, reply.usage.context_tokens)
         await self._emit("after_model", stop_reason=reply.stop_reason, usage=asdict(reply.usage))
         return reply
 
@@ -1198,6 +1306,7 @@ class Agent:
 
     async def _end(self) -> AgentResult:
         status, summary = self._finish or ("failed", "")
+        await self._drop_prepared()
         self._repair("the agent ended")
         await self._cancel_children()
         await self.jobs.close()

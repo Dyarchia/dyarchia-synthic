@@ -87,6 +87,14 @@ With `environment.mode = "copy"`, each child works in a copy, on the git branch
   they are, up to `compact_keep_chars`. It runs when the prompt reaches `compact_at` of the context
   window, and also between two tasks: a new text given to `resume` on a delivered run compacts the
   finished task first when its prompt had reached `compact_boundary_tokens` (0 turns this off).
+- **Background summary** (`context.compact_background = true`, off by default): once the prompt reaches
+  `compact_prepare_at` of the window (0.6), the summary is asked for in the background, right after a step, with
+  that step's exact request plus the template, so it reads the prompt from the cache. It is asked again each time
+  the prompt grows `compact_refresh_tokens` (50000) past the one it came from. When compaction is due, the ready
+  summary replaces what it covers and every later message stays as it is, with no wait (one still in flight is
+  awaited). A summary whose messages changed since (a clean, a compaction, a merged message) is dropped. Its
+  calls are in the ledger and the journal (`purpose = "compaction_prepare"`), used or not; one in flight is
+  cancelled when the agent ends, and one not yet used is lost if the process dies.
 - **Memory** is one folder per project under `memory.dir` (default `~/.synthic/memory`), never inside
   the repository. Its `MEMORY.md` is read once when an agent starts, cut at `memory.max_chars`, and the
   root agent, if it has `edit`, is told to keep it short and current before it delivers; spawned
