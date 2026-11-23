@@ -841,9 +841,12 @@ def test_memory_is_read_once_and_kept_outside_the_repository(tmp_path: Path) -> 
     writer = "".join(build_system(policy, role, folder, ["done", "sh", "edit"]))
     assert f"Memory folder: {home}" in writer and "no MEMORY.md yet" in writer and "Before `done`" in writer
     assert "Memory folder" not in "".join(build_system(policy, role, folder, ["done", "sh"]))
+    assert "Memory folder" not in "".join(build_system(policy, role, folder, ["done", "sh", "edit"], root=False))
     home.mkdir(parents=True)
     (home / "MEMORY.md").write_text("Deploy with the alias dev." + "x" * 40, encoding="utf-8")
     reader = "".join(build_system(policy, role, folder, ["done", "sh"]))
+    child = "".join(build_system(policy, role, folder, ["done", "sh", "edit"], root=False))
+    assert "Deploy with the ali" in child and "Before `done`" not in child
     assert "Deploy with the ali" in reader and "MEMORY.md is too long" in reader and "Before `done`" not in reader
     off = make_policy(tmp_path, {"memory": {"enabled": False}}).policy
     assert "Memory folder" not in "".join(build_system(off, role, folder, ["done", "sh", "edit"]))

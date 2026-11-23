@@ -258,7 +258,9 @@ class Agent:
         if tool_defs is None:
             tool_defs = masker.mask_obj([to_definition(tool) for tool in self.tools.values()])
         if system is None:
-            texts = build_system(self.policy, role, self.cwd, self.tools, runtime.plugins, runtime.root)
+            texts = build_system(
+                self.policy, role, self.cwd, self.tools, runtime.plugins, runtime.root, parent_id is None
+            )
             system = [masker.mask(text) for text in texts]
         self.tool_defs: list[Block] = tool_defs
         self.system: list[str] = system

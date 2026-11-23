@@ -88,8 +88,9 @@ With `environment.mode = "copy"`, each child works in a copy, on the git branch
   window, and also between two tasks: a new text given to `resume` on a delivered run compacts the
   finished task first when its prompt had reached `compact_boundary_tokens` (0 turns this off).
 - **Memory** is one folder per project under `memory.dir` (default `~/.synthic/memory`), never inside
-  the repository. Its `MEMORY.md` is read once when an agent starts, cut at `memory.max_chars`, and an
-  agent with `edit` is told to keep it short and current before it delivers. `memory.enabled = false`
+  the repository. Its `MEMORY.md` is read once when an agent starts, cut at `memory.max_chars`, and the
+  root agent, if it has `edit`, is told to keep it short and current before it delivers; spawned
+  agents only read it. `memory.enabled = false`
   turns it off.
 
 ## Interrupting a run

@@ -81,11 +81,13 @@ def memory_dir(policy: Policy, base: Path) -> Path:
     return Path(policy.memory.dir).expanduser() / f"{root.name}-{digest}"
 
 
-def _memory(policy: Policy, base: Path, tools: Collection[str]) -> str:
+def _memory(policy: Policy, base: Path, tools: Collection[str], root: bool) -> str:
     """The notes kept by earlier runs, and who keeps them now. Empty when there is nothing to say.
 
     Read once, when the agent starts: the text is then fixed for the run, as
-    the prompt cache needs. An agent without ``edit`` only reads the notes.
+    the prompt cache needs. Only the root agent keeps the notes, and only if
+    it has ``edit``: a child would spend a step on it, and several children
+    would overwrite each other. Everyone else only reads them.
     """
     if not policy.memory.enabled:
         return ""
@@ -94,7 +96,7 @@ def _memory(policy: Policy, base: Path, tools: Collection[str]) -> str:
         notes = (folder / "MEMORY.md").read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         notes = ""
-    writes = "edit" in tools
+    writes = root and "edit" in tools
     if not notes and not writes:
         return ""
     lines = [f"Memory folder: {folder}"]
@@ -167,18 +169,20 @@ def build_system(
     tools: Collection[str],
     plugins: Plugins | None = None,
     base: Path | None = None,
+    root: bool = True,
 ) -> list[str]:
     """System texts for one agent, most stable first; each becomes one system block.
 
     ``tools`` names the tools the agent has, so only what it can use is
     described. ``base`` resolves relative paths in ``instructions.files``
-    (the project root; ``cwd`` when not given).
+    (the project root; ``cwd`` when not given). ``root`` is false for a
+    spawned agent.
     """
     texts = [_preamble(policy, cwd, tools)]
     if role.instructions:
         texts.append(role.instructions)
     texts.extend(_instruction_files(policy, cwd, base or cwd))
-    if memory := _memory(policy, base or cwd, tools):
+    if memory := _memory(policy, base or cwd, tools, root):
         texts.append(memory)
     if plugins is not None and ({"skill", "mcp"} & set(tools)) and (index := plugins.index_text()):
         texts.append(index)

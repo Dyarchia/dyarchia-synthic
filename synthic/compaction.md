@@ -4,6 +4,7 @@ and brief: exact names, paths, commands, ids and numbers, no narration.
 
 Tool outputs stay on disk under their receipt ids (r1, r2, ...) and remain readable with the
 `receipt` tool after this point. Keep the ids worth rereading; do not copy their contents.
+Your system prompt stays as it is: do not repeat anything it says.
 
 Copy word for word, never paraphrase: what the human asked and every correction the human made,
 error messages, and identifiers (names, paths, ids, values). If you must cut, cut from the bottom
