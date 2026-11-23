@@ -127,4 +127,9 @@ blocked_domains = []
 fetch_citations = false
 search_price = 10.0
 
+[verify]
+commands = []
+rounds = 2
+timeout_seconds = 1800
+
 [permissions]

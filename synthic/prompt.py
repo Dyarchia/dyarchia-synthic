@@ -127,8 +127,12 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
-def _limits(policy: Policy, role: Role, tools: Collection[str]) -> str:
-    """The limits that apply to this agent, so it does not spend steps discovering them."""
+def _limits(policy: Policy, role: Role, tools: Collection[str], root: bool) -> str:
+    """The limits that apply to this agent, so it does not spend steps discovering them.
+
+    The root agent is also told what its delivery must pass (``verify``), so it
+    runs the checks itself first instead of spending a rejection on them.
+    """
     lines = ["Limits set by the human (fixed for this run):", f"- Your role: {role.name}."]
     if "spawn" in tools:
         lines.append(
@@ -161,6 +165,14 @@ def _limits(policy: Policy, role: Role, tools: Collection[str]) -> str:
         lines.append(f"- Tool calls no rule covers are {fate}.")
     if policy.human.question_fallback == "stop":
         lines.append("- A question nobody answers ends your run.")
+    verify = policy.verify
+    if root and (verify.commands or verify.review):
+        checks = []
+        if verify.commands:
+            checks.append("these commands must exit 0: " + "; ".join(f"`{c}`" for c in verify.commands))
+        if verify.review:
+            checks.append("a reviewer checks the work against everything the human asked")
+        lines.append("- Before `done` can deliver, " + ", then ".join(checks) + ".")
     return "\n".join(lines)
 
 
@@ -192,7 +204,7 @@ def build_system(
     if plugins is not None and ({"skill", "mcp"} & set(tools)) and (index := plugins.index_text()):
         texts.append(index)
     if policy.visible_to_agent:
-        texts.append(_limits(policy, role, tools))
+        texts.append(_limits(policy, role, tools, root))
     started = (now or datetime.now()).astimezone()
     texts.append(
         f"You started on {started:%A %Y-%m-%d}. This line is not updated: ask the system when the "

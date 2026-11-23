@@ -100,6 +100,7 @@ from .types import (
     Policy,
     ProviderSettings,
     Role,
+    VerifySettings,
     WebSettings,
 )
 
@@ -246,6 +247,7 @@ _SCHEMA: dict[str, Any] = {
         "fetch_citations": "bool",
         "search_price": "number",
     },
+    "verify": {"commands": "strings", "review": "str", "rounds": "int", "timeout_seconds": "number"},
     "permissions": "rules",
     "hooks": "hooks",
 }
@@ -615,6 +617,11 @@ def _build(
             Path(template).expanduser().read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             problems.append(f"context.compaction_template '{template}' is not a readable text file: {error}")
+    verify = tree.get("verify", {})
+    if (reviewer := verify.get("review")) is not None and reviewer not in roles:
+        problems.append(f"verify.review '{reviewer}' is not a defined role")
+    if verify.get("rounds", 0) < 0:
+        problems.append("verify.rounds must not be negative")
     provider = tree.get("provider", {})
     if provider.get("retry_seconds", 0.0) < 0:
         problems.append("provider.retry_seconds must not be negative")
@@ -645,6 +652,7 @@ def _build(
         instructions=InstructionSettings(**section("instructions")),
         plugins=PluginSettings(**plugins),
         web=WebSettings(**section("web")),
+        verify=VerifySettings(**section("verify")),
         permissions=rules,
         default_permission=tree.get("default_permission", "allow"),
         hooks=hooks,

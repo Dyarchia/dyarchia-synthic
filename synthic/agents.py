@@ -41,6 +41,7 @@ from .journal import (
     ALIVE_FILE,
     HEARTBEAT_SECONDS,
     JOURNAL_FILE,
+    FileJournal,
     Masker,
     agents_in,
     beat,
@@ -52,6 +53,7 @@ from .loop import ENGINE_TOOLS, Agent, AgentResult, Question
 from .plugins import load_plugins
 from .policy import LoadedPolicy, PolicyError, spawn_role
 from .provider import AnthropicProvider
+from .verify import REVIEWER_ID
 from .types import Attachment, Budget, Provider, Role, ToolContext, ToolOutput, Usage
 
 OutputCallback = Callable[[str, str, str], None]
@@ -293,6 +295,7 @@ class Runtime:
     * ``agent_start`` / ``agent_end``: an agent began (role and task) or ended (status and summary);
     * ``question``: a question or permission request is open (``id: text``);
     * ``warning``: a budget warning, a model switch, a failed compaction, a policy or plugin problem.
+    * ``verify``: a check of a delivery passed, failed, or ended as not verified.
 
     Callbacks run inline on the event loop and are not guarded: one that
     raises ends the agent that produced the output as ``failed``.
@@ -332,6 +335,7 @@ class Runtime:
         self._questions: dict[str, Question] = {}
         self._callbacks: list[OutputCallback] = []
         self._ids = itertools.count(1)
+        self._reviews = itertools.count(1)
         self.warnings = [*loaded.warnings, *self.plugins.problems, *web.warnings(policy)]
         for raw in policy.instructions.files:
             path = Path(raw).expanduser()
@@ -403,6 +407,13 @@ class Runtime:
             return AgentResult(ROOT_ID, end.data["status"], end.data["summary"], usage, steps)
         numbers = [int(m.group(1)) for a in agents_in(self.run_dir) if (m := re.fullmatch(r"a(\d+)(?:\.\d+)?", a))]
         self._ids = itertools.count(max(numbers, default=0) + 1)
+        reviewers = [a for a in agents_in(self.run_dir) if REVIEWER_ID.fullmatch(a)]
+        self._reviews = itertools.count(max((int(a[1:]) for a in reviewers), default=0) + 1)
+        for reviewer in reviewers:
+            if ended(read_records(self.run_dir, reviewer)) is None:
+                journal = FileJournal(self.run_dir, reviewer, self.masker)
+                journal.append("done", {"status": "cancelled", "summary": "Cancelled: the process died while it ran."})
+                journal.close()
         self.root_agent = Agent.resume(self, ROOT_ID, text, attachments)
         self.agents[ROOT_ID] = self.root_agent
         return await self._run_root()
@@ -482,6 +493,10 @@ class Runtime:
 
     def spawn_tools(self, agent: Agent) -> dict[str, Any]:
         return {"spawn": SpawnTool(self, agent), "agent": AgentTool(agent)}
+
+    def reviewer_id(self) -> str:
+        """A new id for a reviewer agent of ``verify``: ``v1``, ``v2``... apart from the children's ``a`` ids."""
+        return f"v{next(self._reviews)}"
 
     def running_children(self) -> int:
         return sum(1 for handle in self.handles.values() if not handle.done.is_set())

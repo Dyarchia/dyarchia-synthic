@@ -368,6 +368,23 @@ class WebSettings:
 
 
 @dataclass(frozen=True)
+class VerifySettings:
+    """Checks a delivery must pass, run when the root agent calls ``done`` as delivered. Off while both are empty.
+
+    ``commands`` run in the working folder, in order, and must exit 0 within
+    ``timeout_seconds`` each. ``review`` names the role of a reviewer agent
+    that judges the work with a fresh context. ``rounds`` is how many times a
+    delivery may be rejected; one that still fails after that is accepted and
+    marked as not verified.
+    """
+
+    commands: tuple[str, ...] = ()
+    review: str | None = None
+    rounds: int = 2
+    timeout_seconds: float = 1800.0
+
+
+@dataclass(frozen=True)
 class HookSpec:
     """A command of the human that runs on an event. ``match`` is a glob on the tool name, or empty."""
 
@@ -436,6 +453,7 @@ class Policy:
     instructions: InstructionSettings = InstructionSettings()
     plugins: PluginSettings = PluginSettings()
     web: WebSettings = WebSettings()
+    verify: VerifySettings = VerifySettings()
     permissions: tuple[PermissionRule, ...] = ()
     default_permission: Decision = "allow"
     hooks: tuple[HookSpec, ...] = ()
@@ -477,6 +495,10 @@ class Record:
     * ``answer``: ``{question_id, text}``
     * ``interrupt``: ``{mode}`` with mode ``stop``, ``add`` or ``redirect``
     * ``hook``: ``{event, action, reason}``
+    * ``verify``: ``{round, passed, accepted, report, reviewer}`` one check of a
+      delivery (``verify`` policy): ``accepted`` false is a rejection, which
+      returns to the agent as the error result of its ``done``; ``reviewer`` is
+      the id of the reviewer agent, or ``None``
     * ``done``: ``{status, summary}`` with status ``delivered``, ``failed``,
       ``budget``, ``stopped`` or ``cancelled``
     * ``resume``: ``{}`` a new process took the agent up again (after a crash or

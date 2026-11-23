@@ -143,6 +143,35 @@ allowed_domains = ["docs.python.org"]
 - After a paused turn (`pause_turn`), or a turn that called server and client tools together, the engine
   sends no new text until the provider has finished the call; messages that arrive meanwhile wait one step.
 
+## Verification before delivery
+
+```toml
+[verify]
+commands = ["python -m pytest -q", "git diff --check"]
+review = "reviewer"
+rounds = 2
+
+[role.reviewer]
+model = "sonnet"
+tools = ["sh"]
+```
+
+- Off by default. It runs only when the root agent calls `done` as delivered: first the `before_done`
+  hook, then the commands in the working folder (each must exit 0 within `verify.timeout_seconds`, 1800 by
+  default, or it is killed and fails), then the review. Running children are cancelled first, as every
+  `done` does. The root agent's system prompt names the checks, so it can run them itself first.
+- The reviewer is a fresh agent (`v1`, `v2`...) with the role `review` names, as the policy defines it. It
+  gets every message the human sent during the run, from the journal, with their attachments, the delivering
+  agent's summary, and how to see the changes (`git status`, `git diff` and the commits since the run
+  started). Its `done` is the verdict: `delivered` approves, `failed` rejects with the list of problems.
+  Its cost is in the same ledger.
+- A rejection is the error result of the agent's `done`, with the failing output or the reviewer's list,
+  and the agent keeps working. After `rounds` rejections a delivery that still fails is accepted, and its
+  summary starts with `NOT VERIFIED:` and the reason. A reviewer that ends without a verdict (budget,
+  stopped, an error) does not use a round: the delivery is accepted as `NOT VERIFIED`.
+- Child agents are not verified; their parent judges their work. Each check is a `verify` record in the
+  journal, so a resumed run keeps the rejections it had.
+
 ## Interrupting a run
 
 From the same terminal (when stdin is a terminal), type a line while the run goes:

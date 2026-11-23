@@ -58,7 +58,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from . import web
+from . import verify, web
 from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
@@ -298,6 +298,8 @@ class Agent:
         self._questions = itertools.count(1)
         self._resumed = False
         self._paused = False
+        self.rejections = 0
+        """Deliveries ``verify`` rejected since the last ``done``; restored from the journal on resume."""
         self._next_task: tuple[str, Sequence[Attachment]] | None = None
 
     def _build_tools(self) -> dict[str, Tool]:
@@ -367,6 +369,7 @@ class Agent:
         self.journal.append("resume", {})
         self.context.replay(records)
         self.context.drop_thinking()
+        self.rejections = verify.rejections(records)
         for record in records:
             match record.kind:
                 case "model_call":
@@ -1079,8 +1082,21 @@ class Agent:
                 is_error=True,
             )
         await self._cancel_children()
+        if status == "delivered" and verify.active(self):
+            checked = await verify.Verifier(self).check(summary)
+            if isinstance(checked, ToolOutput):
+                return checked
+            summary = checked
         self._finish = (status, summary)
         return ToolOutput("Finished.")
+
+    @property
+    def cancel_event(self) -> asyncio.Event:
+        """The event an interrupt sets; a redirect replaces it, so read it when it is needed."""
+        return self._cancel
+
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
 
     async def _ask(self, tool_input: dict[str, Any]) -> ToolOutput:
         text = str(tool_input.get("question") or "").strip()
