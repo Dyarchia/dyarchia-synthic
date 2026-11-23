@@ -302,7 +302,8 @@ class Context:
         else:
             self._messages.append({"role": "user", "content": blocks})
 
-    def add_assistant(self, content: list[Block]) -> None:
+    def add_assistant(self, content: list[Block]) -> bool:
+        """Add an assistant turn; True when it closed a server tool call and released held user messages."""
         if not content:
             raise ValueError("empty assistant content")
         if self._pending():
@@ -312,10 +313,12 @@ class Context:
             self._messages[-1]["content"].extend(blocks)
         else:
             self._messages.append({"role": "assistant", "content": blocks})
-        if self._held and not self.server_pending():
-            held, self._held = self._held, []
-            for text, attachments in held:
-                self.add_user(text, attachments)
+        if not self._held or self.server_pending():
+            return False
+        held, self._held = self._held, []
+        for text, attachments in held:
+            self.add_user(text, attachments)
+        return True
 
     def server_pending(self) -> bool:
         """Whether a ``server_tool_use`` of the history still has no result block.
@@ -335,9 +338,6 @@ class Context:
                 elif kind != "tool_result" and "tool_use_id" in block:
                     called.discard(block["tool_use_id"])
         return bool(called)
-
-    def last_role(self) -> str | None:
-        return self._messages[-1]["role"] if self._messages else None
 
     def add_tool_results(self, results: list[ToolResultEntry]) -> None:
         pending = self._pending()

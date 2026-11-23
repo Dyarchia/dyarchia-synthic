@@ -15,8 +15,9 @@ is fixed: the ``before_done`` hook (in the loop), then ``commands``, then the
   context, which compaction may have shortened, and every file the human
   attached. Its ``done`` is the verdict: ``delivered`` approves, ``failed``
   rejects with the list of problems. A reviewer that ends any other way (budget,
-  stopped, an engine error) gave no verdict, so the delivery is accepted as not
-  verified without using up a round. A reviewer is never reviewed: only the
+  stopped, a failed model call or an engine error, which also end an agent as
+  ``failed`` but not through its ``done``) gave no verdict, so the delivery is
+  accepted as not verified without using up a round. A reviewer is never reviewed: only the
   root agent is verified, since a child's delivery is checked by its parent.
 * A rejection returns to the agent as the error result of its ``done``, with
   the failing output or the reviewer's list, and the agent keeps working.
@@ -174,7 +175,7 @@ class Verifier:
         match result.status:
             case "delivered":
                 return "passed", result.summary, reviewer_id
-            case "failed":
+            case "failed" if reviewer.ended_by_done:
                 return "failed", f"The reviewer ({role.name}) rejected the delivery:\n{result.summary}", reviewer_id
         return "none", f"the review did not finish ({result.status}: {result.summary})", reviewer_id
 
@@ -185,7 +186,12 @@ class Verifier:
         started = next((r.ts for r in records if r.kind == "start"), None)
         messages: list[str] = []
         files: list[Attachment] = []
+        asked = {r.data["question_id"]: r.data["text"] for r in records if r.kind == "question"}
         for record in records:
+            if record.kind == "answer":
+                question = asked.get(record.data["question_id"], record.data["question_id"])
+                messages.append(f'{len(messages) + 1}. (answering "{question}") {record.data["text"]}')
+                continue
             if record.kind != "user" or record.data.get("source") != "human":
                 continue
             attached = record.data.get("attachments", [])

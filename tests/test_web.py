@@ -94,6 +94,11 @@ def test_permissions_decide_whether_a_tool_is_offered_and_its_domains(tmp_path: 
     listed = tools({"web": {"allowed_domains": ["a.com", "b.com"]}, "permissions": {"web_fetch: b.com": "deny"}})
     assert listed[0]["allowed_domains"] == ["a.com", "b.com"] and listed[1]["allowed_domains"] == ["a.com"]
     assert tools({"permissions": {"web_search: *": "ask"}})[0]["name"] == "web_fetch"
+    denied = {"web_fetch: *": "deny", "web_fetch: a.com": "allow"}
+    assert [t["name"] for t in tools({"permissions": denied})] == ["web_search"]
+    assert [t["name"] for t in tools({"permissions": {"web_fetch: *": "deny"}, "web": {"allowed_domains": ["a.com"]}})] == [
+        "web_search"
+    ]
     loose = policy(tmp_path, {"permissions": {"web_fetch: ex*.com": "deny"}, "human": {"permission_fallback": "allow"}})
     assert [t["name"] for t in web.definitions(loose, ["web_search", "web_fetch"])] == ["web_search"]
     assert "web_fetch is not offered" in web.warnings(loose)[0]
@@ -172,6 +177,11 @@ def test_mixed_turn_sends_only_tool_results_and_holds_other_text(tmp_path: Path)
     assert_valid(again.requests[0].messages)
     live = provider.requests[2].messages
     assert again.requests[0].messages[: len(live)] == live
+
+
+def test_empty_replies_still_end_the_agent_after_two_idle_turns(tmp_path: Path) -> None:
+    _, result, _ = go(tmp_path, [reply(), reply()], WEB_ROLE)
+    assert result.status == "failed" and result.summary.startswith("Ended its turn twice")
 
 
 def test_a_cut_reply_drops_its_trailing_unanswered_server_call(tmp_path: Path) -> None:

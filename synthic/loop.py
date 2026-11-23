@@ -259,7 +259,8 @@ class Agent:
         self.tools = self._build_tools()
         masker = runtime.masker
         if tool_defs is None:
-            """Server tools go first, so the cache mark of the tool list lands on a client tool definition."""
+            """Server tools go first, so the cache mark of the tool list lands on a client tool
+            definition: the docs never say that a server tool definition takes ``cache_control``."""
             client = [to_definition(tool) for tool in self.tools.values()]
             tool_defs = masker.mask_obj([*web.definitions(self.policy, role.tools), *client])
         if system is None:
@@ -299,6 +300,8 @@ class Agent:
         self._resumed = False
         self._paused = False
         self.rejections = 0
+        self.ended_by_done = False
+        """Whether the agent ended by calling ``done``, rather than by a cap, an interrupt or a failure."""
         """Deliveries ``verify`` rejected since the last ``done``; restored from the journal on resume."""
         self._next_task: tuple[str, Sequence[Attachment]] | None = None
 
@@ -592,7 +595,8 @@ class Agent:
             self._add_user(f"[budget] {warning}. Plan to finish within the budget.", "engine")
         if self._next_task is not None:
             (text, attachments), self._next_task = self._next_task, None
-            if self.context.boundary_due() and (await self._emit("before_compaction")).action != "block":
+            due = self.context.boundary_due() and not self.context.server_pending()
+            if due and (await self._emit("before_compaction")).action != "block":
                 await self._compact()
             self._add_user(text, "human", attachments)
         self._deliver()
@@ -776,7 +780,7 @@ class Agent:
         self.runtime.output(self.id, "warning", f"model {self._model} -> {alias} for the next call: {_short(reason)}")
         self._next_model = alias
 
-    def _append(self, content: list[Block]) -> None:
+    def _append(self, content: list[Block]) -> bool:
         """Mask the reply and add it to the context and the journal.
 
         Masking a block is an edit of what the model wrote, and a thinking
@@ -795,9 +799,11 @@ class Agent:
             masked = masker.mask_obj(block)
             edited = edited or masked != block
             blocks.append(masked)
-        if blocks:
-            self.context.add_assistant(blocks)
-            self.journal.append("assistant", {"content": pack(blocks, self.receipts)})
+        if not blocks:
+            return False
+        released = self.context.add_assistant(blocks)
+        self.journal.append("assistant", {"content": pack(blocks, self.receipts)})
+        return released
 
     async def _act(self, reply: ModelReply) -> None:
         """Do what the provider docstring prescribes for each stop reason."""
@@ -814,7 +820,7 @@ class Agent:
             await self._truncated(reply, calls)
             return
         self._cut_turns = 0
-        self._append(reply.content)
+        released = self._append(reply.content)
         if reason in ("pause_turn", "compaction"):
             self._paused = reason == "pause_turn"
             return
@@ -822,7 +828,7 @@ class Agent:
             self._idle_turns = 0
             await self._run_calls(calls)
         else:
-            await self._idle(reply)
+            await self._idle(reply, released)
 
     async def _truncated(self, reply: ModelReply, calls: list[Block]) -> None:
         """A reply cut by a limit: never run or keep a cut tool call; keep cut text and let the model go on.
@@ -858,16 +864,16 @@ class Agent:
             "engine",
         )
 
-    async def _idle(self, reply: ModelReply) -> None:
+    async def _idle(self, reply: ModelReply, released: bool = False) -> None:
         """The model ended its turn without calling a tool.
 
         With children running this is a parent waiting for them: it sleeps
         until something arrives. Otherwise it is reminded once to continue or
         call ``done``; a second time in a row ends the agent as ``failed``.
-        A message that was held during a server tool call and entered after
-        this reply (``Context.add_user``) is news as well.
+        Messages held during a server tool call that entered with this reply
+        (``released``, see ``Context.add_user``) are news as well.
         """
-        if self.has_news() or self.context.last_role() == "user":
+        if self.has_news() or released:
             return
         if any(not h.done.is_set() for h in self.children.values()):
             while not self.has_news() and not self._cancel.is_set():
@@ -1088,6 +1094,7 @@ class Agent:
                 return checked
             summary = checked
         self._finish = (status, summary)
+        self.ended_by_done = True
         return ToolOutput("Finished.")
 
     @property

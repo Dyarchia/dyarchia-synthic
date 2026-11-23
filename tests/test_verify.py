@@ -10,6 +10,7 @@ import pytest
 from test_loop import done, go, make_policy, project, records, results
 from test_proc import py_command, write_script
 
+from synthic import cli
 from synthic.agents import Runtime
 from synthic.loop import AgentResult
 from synthic.policy import Level, PolicyError, factory_defaults, merge_levels
@@ -117,6 +118,40 @@ def test_a_reviewer_without_a_verdict_does_not_use_a_round(tmp_path: Path) -> No
     assert result.status == "delivered"
     assert result.summary.startswith("NOT VERIFIED: the review did not finish (budget")
     assert [v["accepted"] for v in verifies(runtime)] == [True]
+
+
+def test_a_reviewer_that_fails_outside_its_done_gives_no_verdict(tmp_path: Path) -> None:
+    script = [create_ok(), done("Done."), ProviderError("overloaded for good", 400)]
+    runtime, result, _ = go(tmp_path, script, checked(tmp_path, review="checker"))
+    assert result.status == "delivered"
+    assert result.summary.startswith("NOT VERIFIED: the review did not finish (failed: The model call failed")
+    assert [v["accepted"] for v in verifies(runtime)] == [True]
+
+
+def test_the_brief_carries_the_answers_of_the_human_and_show_lists_the_checks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    box: dict[str, Runtime] = {}
+
+    def ask(request: ModelRequest) -> Any:
+        return reply(tool_use("ask", {"question": "Which file?", "assumption": "ok.txt"}))
+
+    def answer(request: ModelRequest) -> Any:
+        box["runtime"].answer("root-q1", "ok.txt, please")
+        return create_ok()
+
+    def prepare(runtime: Runtime) -> None:
+        box["runtime"] = runtime
+
+    script = [ask, answer, done("Made it."), done("- wrong content", status="failed"), done("Fixed."), done("Fine.")]
+    runtime, result, provider = go(tmp_path, script, checked(tmp_path, review="checker"), prepare)
+    assert result.status == "delivered"
+    assert '2. (answering "Which file?") ok.txt, please' in reviewer_saw(provider, 3)
+    options = ["--set", f"journal.dir={(tmp_path / 'runs').as_posix()}"]
+    assert cli.main(["show", runtime.run_id, *options]) == 0
+    shown = capsys.readouterr().out
+    assert "verify round 1 by v1 rejected: The reviewer (checker) rejected" in shown
+    assert "verify round 2 by v2 passed" in shown
 
 
 def test_a_child_delivery_is_not_verified(tmp_path: Path) -> None:

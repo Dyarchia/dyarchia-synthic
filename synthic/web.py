@@ -25,9 +25,11 @@ before it happens. The provider runs it inside the model call, so no hook,
 ``ask`` rule or human approval can stop one call. Permissions act where they
 can, when the request is built:
 
-* A rule whose pattern is ``*`` (or the default permission, when no rule
-  matches) decides whether the tool is offered at all. ``ask`` becomes
-  ``human.permission_fallback``, since nobody can be asked mid-call.
+* A rule whose pattern is ``*`` decides whether the tool is offered at all,
+  and a deny of that kind always holds. ``ask`` becomes
+  ``human.permission_fallback``, since nobody can be asked mid-call. When no
+  such rule matches, the default permission decides; a default deny still
+  lets the allowed domains through.
 * Every other rule names a domain: ``"web_fetch: example.com" = "deny"`` adds it
   to ``blocked_domains``; an ``allow`` rule adds it to ``allowed_domains`` when
   the tool is otherwise denied. ``*.example.com`` is read as ``example.com``,
@@ -85,9 +87,11 @@ def _covers(blocked: str, domain: str) -> bool:
 
 def _plan(policy: Policy, name: str) -> _Plan:
     web = policy.web
-    decision, _ = decide(policy, name, "*")
+    decision, matched = decide(policy, name, "*")
     if decision == "ask":
         decision = policy.human.permission_fallback
+    if decision == "deny" and matched is not None:
+        return _Plan(offered=False)
     plan = _Plan(offered=True, allowed=list(web.allowed_domains), blocked=list(web.blocked_domains))
     for rule in policy.permissions:
         if rule.tool != name or rule.pattern.strip() == "*":

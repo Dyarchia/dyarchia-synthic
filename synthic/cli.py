@@ -679,6 +679,11 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
             return f"compaction: {fit(data.get('summary', ''))}"
         case "hook":
             return f"hook {data.get('event')} {data.get('action')}: {fit(data.get('reason', ''))}"
+        case "verify":
+            verdict = "passed" if data.get("passed") else "accepted, not verified" if data.get("accepted") else "rejected"
+            by = f" by {data['reviewer']}" if data.get("reviewer") else ""
+            report = f": {fit(data['report'])}" if data.get("report") else ""
+            return f"verify round {data.get('round')}{by} {verdict}{report}"
         case "done":
             return f"done {data.get('status')}: {fit(data.get('summary', ''))}"
     return None
