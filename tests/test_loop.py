@@ -10,6 +10,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -596,8 +597,12 @@ def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     policy = make_policy(tmp_path, rules).policy
     role = policy.roles["lead"]
     tools = ["done", "ask", "receipt", "sh", "job", "edit", "spawn", "agent"]
-    texts = build_system(policy, role, folder, tools)
-    assert texts == build_system(policy, role, folder, tools)
+    at = datetime(2026, 11, 23, 9, 5, tzinfo=timezone.utc)
+    texts = build_system(policy, role, folder, tools, now=at)
+    assert texts == build_system(policy, role, folder, tools, now=at)
+    assert texts[-1].startswith("You started on Monday 2026-11-23 at ")
+    assert texts[:-1] == build_system(policy, role, folder, tools, now=at.replace(year=2027))[:-1]
+    texts = texts[:-1]
     assert all(text.endswith("\n\n") for text in texts)
     assert f"Working folder: {folder}\n" in "".join(texts)
     assert "Repo says hi." not in "".join(texts)
@@ -607,6 +612,7 @@ def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     assert any("comes from the repository" in t and "Repo says hi." in t for t in wrapped)
     hidden = make_policy(tmp_path, {"visible_to_agent": False}).policy
     assert not any("Limits set by the human" in t for t in build_system(hidden, role, folder, tools))
+    assert build_system(hidden, role, folder, tools)[-1].startswith("You started on ")
     assert "nested at most 2 levels below the root agent" in texts[-1]
 
 

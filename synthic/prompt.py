@@ -2,8 +2,9 @@
 
 Every token here is paid on every step of every agent, and the prompt cache only
 discounts a byte-identical prefix, so the text is short and fixed for the whole
-run: nothing in it changes between steps (no clock, no counter). Blocks go from
-the most stable (engine preamble) to the least (limits of this one agent).
+run: nothing in it changes between steps (no ticking clock, no counter). Blocks
+go from the most stable (engine preamble) to the least: the limits of this one
+agent, then the moment it started, which differs on every run and so goes last.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import platform
 from collections.abc import Collection
+from datetime import datetime
 from pathlib import Path
 
 from .plugins import Plugins
@@ -170,13 +172,15 @@ def build_system(
     plugins: Plugins | None = None,
     base: Path | None = None,
     root: bool = True,
+    now: datetime | None = None,
 ) -> list[str]:
     """System texts for one agent, most stable first; each becomes one system block.
 
     ``tools`` names the tools the agent has, so only what it can use is
     described. ``base`` resolves relative paths in ``instructions.files``
     (the project root; ``cwd`` when not given). ``root`` is false for a
-    spawned agent.
+    spawned agent. ``now`` is the moment the agent starts (the local time
+    when not given); it is written once and never updated.
     """
     texts = [_preamble(policy, cwd, tools)]
     if role.instructions:
@@ -188,6 +192,11 @@ def build_system(
         texts.append(index)
     if policy.visible_to_agent:
         texts.append(_limits(policy, role, tools))
+    started = (now or datetime.now()).astimezone()
+    texts.append(
+        f"You started on {started:%A %Y-%m-%d} at {started:%H:%M} (UTC{started:%z}). "
+        "This line is not updated: after long work, ask the system for the time."
+    )
     """The vendor joins system blocks with nothing in between, so each block must end its own
     paragraph. Without this the working folder ran into the first word of the next block, and
     the first live run wrote its file in a folder that did not exist."""
