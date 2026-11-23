@@ -86,6 +86,7 @@ from .types import (
     EVENTS,
     AgentLimits,
     Budget,
+    CheckpointSettings,
     ContextSettings,
     Decision,
     DockerSettings,
@@ -266,6 +267,7 @@ _SCHEMA: dict[str, Any] = {
         "search_price": "number",
     },
     "verify": {"commands": "strings", "review": "str", "rounds": "int", "timeout_seconds": "number"},
+    "checkpoints": {"edits": "bool", "shell": "bool"},
     "permissions": "rules",
     "hooks": "hooks",
 }
@@ -681,6 +683,7 @@ def _build(
         plugins=PluginSettings(**plugins),
         web=WebSettings(**section("web")),
         verify=VerifySettings(**section("verify")),
+        checkpoints=CheckpointSettings(**section("checkpoints")),
         permissions=rules,
         default_permission=tree.get("default_permission", "allow"),
         hooks=hooks,

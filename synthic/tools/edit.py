@@ -145,6 +145,8 @@ class EditTool:
             data, message = await asyncio.to_thread(
                 edit_bytes, raw, old, new, tool_input.get("replace_all") is True, location.shown
             )
+            if ctx.before_write is not None:
+                ctx.before_write(location, raw)
             await sandbox.write(location, data)
         except (EditError, OSError) as error:
             return ToolOutput(str(error), is_error=True)

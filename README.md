@@ -25,7 +25,8 @@ synthic run "Add a --verbose flag to cli.py" --cwd path/to/repo
 3 budget, 130 stopped. `--quiet` prints only the final summary, `--json` prints one JSON object per
 event, and the last one is the result.
 
-Other commands: `runs`, `show [run-id] [--agent ID] [--full]`, `questions [run-id]`, `policy`, `prune`.
+Other commands: `runs`, `show [run-id] [--agent ID] [--full]`, `questions [run-id]`, `policy`, `prune`,
+`rewind [run-id] [--to STEP]` (see File checkpoints).
 `synthic policy` prints every value in force and the level that set it, before you start anything.
 `synthic runs` shows each run as `running`, `crashed` (no recorded end and no live process), or its
 final status.
@@ -231,6 +232,33 @@ mounts = { "/ref" = "C:/data/reference" }
   detached ones included. Output a leftover process writes more than about 2 s after its shell exited is lost.
 - `user` sets `--user` (default: the host uid:gid on Linux and macOS), `options` adds `docker run` arguments,
   `shell` is the shell inside (`["sh", "-c"]`), and `command` the client (`["docker"]`).
+
+## File checkpoints
+
+```toml
+[checkpoints]
+edits = true
+shell = true
+```
+
+```bash
+synthic rewind [run-id] --to 3 --dry-run
+synthic rewind [run-id] --to 3 [--agent a1]
+```
+
+- `edits`: before `edit` writes a file, its previous bytes are kept in the run folder (once, by hash), or the
+  record says the file was new. `shell`: before a turn that runs `sh`, when the working folder is in a git work
+  tree, a git tree of it (tracked and untracked files git does not ignore) is written with a private index: the
+  repository's index, branches and stash are not touched, and its object store gains blobs that `git gc` later
+  drops. The run folder is never captured. Both are `checkpoint` records with the agent's step number, shown by
+  `synthic show`. Off by default.
+- `rewind` undoes, newest first, every checkpoint after step `STEP` (default 0: everything): edited files get
+  their bytes back, created ones are deleted, and a git checkpoint puts the working folder back to its tree,
+  deleting files git does not ignore that the tree does not hold. Steps are the root's (children's checkpoints
+  count from the moment the root's next step began), or one agent's own with `--agent`. It refuses a live run.
+- Not covered: what `sh` changes outside a git work tree or in ignored files, what a background job changes
+  between two turns, `[verify]` commands, hooks, MCP servers, files that only existed in the Docker container, and
+  anything remote (a Salesforce org, a pushed branch, a sent message). A resumed agent is not told about a rewind.
 
 ## Interrupting a run
 

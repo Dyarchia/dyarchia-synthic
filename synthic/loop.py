@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from . import verify, web
+from .checkpoints import Recorder
 from .schema import validate as validate_result
 from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
@@ -289,6 +290,8 @@ class Agent:
         self.journal = journal or FileJournal(runtime.run_dir, agent_id, runtime.masker)
         self.receipts = ReceiptStore(self.journal.dir / "receipts")
         self.jobs = JobManager(sandbox=runtime.sandbox)
+        checkpoints = self.policy.checkpoints
+        self.recorder = Recorder(self.journal, lambda: self.steps) if checkpoints.edits or checkpoints.shell else None
         self.children: dict[str, ChildHandle] = {}
         self.result_schema = role.result_schema if tool_defs is None else _result_schema(tool_defs)
         """The schema a delivery's ``result`` must match; a resumed agent keeps the one its ``done`` was shown."""
@@ -1072,8 +1075,15 @@ class Agent:
         if dirs := self.runtime.plugins.path_dirs:
             current = env.get("PATH") or os.environ.get("PATH", "")
             env["PATH"] = os.pathsep.join([*(str(d) for d in dirs), current])
+        before_write = self.recorder.before_write if self.recorder and self.policy.checkpoints.edits else None
         return ToolContext(
-            self.id, self.cwd, env, self.policy.environment.tool_timeout_seconds, self._cancel, self.runtime.sandbox
+            self.id,
+            self.cwd,
+            env,
+            self.policy.environment.tool_timeout_seconds,
+            self._cancel,
+            self.runtime.sandbox,
+            before_write,
         )
 
     async def _run_calls(self, blocks: list[Block]) -> None:
@@ -1093,6 +1103,11 @@ class Agent:
             else:
                 admitted.append((call, *verdict))
         ctx = self.tool_context()
+        if self.recorder and self.policy.checkpoints.shell and any(call.name == "sh" for call, _, _ in admitted):
+            try:
+                await self.recorder.snapshot(self.cwd)
+            except Exception as error:
+                self.runtime.output(self.id, "warning", f"checkpoint failed: {_short(str(error))}")
         lanes: dict[str, list[tuple[ToolCall, Tool, dict[str, Any]]]] = {}
         groups: list[list[tuple[ToolCall, Tool, dict[str, Any]]]] = []
         for item in admitted:

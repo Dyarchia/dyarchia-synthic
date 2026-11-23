@@ -1,5 +1,5 @@
-"""The command line of Synthic: ``run``, ``resume``, ``runs``, ``show``, ``policy``, ``questions``, ``prune`` and the
-four remote controls ``stop``, ``say``, ``redirect`` and ``answer``.
+"""The command line of Synthic: ``run``, ``resume``, ``runs``, ``show``, ``policy``, ``questions``, ``prune``,
+``rewind`` and the four remote controls ``stop``, ``say``, ``redirect`` and ``answer``.
 
 Two product rules shape everything here. Once the rules are set, a run never prompts: ``run`` reads stdin only
 when it is a terminal, and then only to let the human interrupt. And the human can always interrupt: from the
@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from .agents import Runtime
+from .checkpoints import describe as describe_checkpoint
+from .checkpoints import rewind
 from .journal import agents_in, ended, is_alive, list_runs, prune, read_records
 from .loop import AgentResult
 from .media import MediaError
@@ -699,6 +701,8 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
             return f"compaction: {fit(data.get('summary', ''))}"
         case "hook":
             return f"hook {data.get('event')} {data.get('action')}: {fit(data.get('reason', ''))}"
+        case "checkpoint":
+            return describe_checkpoint(record)
         case "todo":
             items = data.get("items", [])
             return f"todo {tally_todo(items)}" + ("\n" + render_todo(items) if full else "")
@@ -801,6 +805,28 @@ def cmd_prune(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     return 0
 
 
+def cmd_rewind(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
+    _, loaded = load(args)
+    run_dir = run_folder(loaded, args.run_id)
+    if is_alive(run_dir):
+        raise CliError(f"run {run_dir.name} is running: stop it before rewinding its files")
+    if args.agent and args.agent not in agents_in(run_dir):
+        raise CliError(f"run {run_dir.name} has no agent {args.agent!r}")
+    if args.to < 0:
+        raise CliError("--to must be 0 or more")
+    try:
+        lines = rewind(run_dir, args.to, args.agent, apply=not args.dry_run)
+    except (OSError, RuntimeError, KeyError) as error:
+        raise CliError(f"rewind stopped: {error}", 1) from None
+    if not lines:
+        print(f"Nothing to rewind after step {args.to} (checkpoints are recorded only when the policy turns them on).")
+        return 0
+    print(("Would do:" if args.dry_run else "Done:") + "\n" + "\n".join(f"  {line}" for line in lines))
+    if not args.dry_run:
+        print(f'A resumed agent does not know: say it, as in synthic resume {run_dir.name} "I rewound the files".')
+    return 0
+
+
 def send_control(loaded: LoadedPolicy, run_id: str | None, command: dict[str, Any]) -> int:
     run_dir = run_folder(loaded, run_id)
     if not is_alive(run_dir):
@@ -894,6 +920,11 @@ def build_parser() -> argparse.ArgumentParser:
     questions = add("questions", cmd_questions, "list the open questions of a run")
     questions.add_argument("run_id", nargs="?", help="default: the most recent run")
     add("prune", cmd_prune, "delete the runs older than journal.retention_days")
+    back = add("rewind", cmd_rewind, "undo the file changes recorded by checkpoints after a step")
+    back.add_argument("run_id", nargs="?", help="default: the most recent run")
+    back.add_argument("--to", type=int, default=0, metavar="STEP", help="keep the changes up to this step (default 0)")
+    back.add_argument("--agent", metavar="ID", help="only this agent's changes, with its own step numbers")
+    back.add_argument("--dry-run", action="store_true", help="print what would be done and change nothing")
     stop = add("stop", cmd_stop, "stop a running run from another terminal")
     stop.add_argument("run_id", nargs="?", help="default: the most recent run")
     for name, help_text in (("say", "add a message for the agent of a running run"), ("redirect", "redirect a running run")):

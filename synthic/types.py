@@ -250,6 +250,8 @@ class ToolContext:
     ``timeout_seconds`` is the foreground limit from the policy: a tool that can
     keep working past it must move the work to the background and return.
     ``sandbox`` is where files live and commands run; ``None`` is the host.
+    ``before_write``, when set, gets each file's previous bytes (``None`` for
+    a new file) just before a tool overwrites it (``checkpoints.edits``).
     """
 
     agent_id: str
@@ -258,6 +260,7 @@ class ToolContext:
     timeout_seconds: float
     cancel: asyncio.Event
     sandbox: Sandbox | None = None
+    before_write: Callable[[Location, bytes | None], None] | None = None
 
 
 class Tool(Protocol):
@@ -469,6 +472,18 @@ class VerifySettings:
 
 
 @dataclass(frozen=True)
+class CheckpointSettings:
+    """What is recorded so that ``synthic rewind`` can undo file changes (``checkpoints.py``).
+
+    ``edits``: the previous bytes of every file ``edit`` writes. ``shell``: a
+    git tree of the working folder before every turn that runs ``sh``.
+    """
+
+    edits: bool = False
+    shell: bool = False
+
+
+@dataclass(frozen=True)
 class HookSpec:
     """A command of the human that runs on an event. ``match`` is a glob on the tool name, or empty."""
 
@@ -539,6 +554,7 @@ class Policy:
     plugins: PluginSettings = PluginSettings()
     web: WebSettings = WebSettings()
     verify: VerifySettings = VerifySettings()
+    checkpoints: CheckpointSettings = CheckpointSettings()
     permissions: tuple[PermissionRule, ...] = ()
     default_permission: Decision = "allow"
     hooks: tuple[HookSpec, ...] = ()
@@ -581,6 +597,9 @@ class Record:
     * ``answer``: ``{question_id, text}``
     * ``interrupt``: ``{mode}`` with mode ``stop``, ``add`` or ``redirect``
     * ``hook``: ``{event, action, reason}``
+    * ``checkpoint``: ``{kind: "edit", step, path, host, file}`` the bytes an ``edit`` replaced (``file``
+      under ``<agent>/checkpoints``, absent for a new file), or ``{kind: "git", step, tree, top, prefix}`` a
+      git tree of the working folder before a turn with ``sh`` (``checkpoints`` policy, ``synthic rewind``)
     * ``todo``: ``{items: [{text, state}]}`` the agent's whole task list after a change by the ``todo``
       tool; the context never reads it (the list enters it only through the tool's calls and results)
     * ``verify``: ``{round, passed, accepted, report, reviewer}`` one check of a
