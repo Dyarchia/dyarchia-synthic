@@ -22,15 +22,17 @@ History blocks are kept in the provider's native shape (see ``types.py``).
 from __future__ import annotations
 
 import copy
-import json
+import hashlib
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from synthic.media import MEDIA_BLOCKS, block_tokens
 from synthic.types import (
+    Attachment,
     Block,
     ContextSettings,
     Message,
@@ -47,6 +49,10 @@ _SNAP = 0.2
 
 _STUB_FIRST_LINE = 120
 _RECEIPT_ID = re.compile(r"r([1-9]\d*)")
+_MEDIA_FILE = re.compile(r"m-[0-9a-f]{32}\.[a-z]+")
+_MEDIA_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "application/pdf": "pdf"}
+CHARS_PER_TOKEN = 4
+"""How many characters of text weigh as much as one token; media is weighed in estimated tokens times this."""
 THINKING = frozenset({"thinking", "redacted_thinking"})
 _TTL_SECONDS = {"5m": 300.0, "1h": 3600.0}
 _COMPACTION_TEMPLATE = Path(__file__).with_name("compaction.md")
@@ -114,24 +120,95 @@ class ReceiptStore:
         text = self.get(receipt_id)
         return len(text), len(_lines(text))
 
+    def put_media(self, media_type: str, data: str) -> str:
+        """Store base64 ``data`` once under ``media/``, named by its hash, and return the file name."""
+        digest = hashlib.sha256(data.encode("ascii", "replace")).hexdigest()[:32]
+        name = f"m-{digest}.{_MEDIA_EXT.get(media_type, 'bin')}"
+        folder = self.dir / "media"
+        folder.mkdir(exist_ok=True)
+        target = folder / name
+        if not target.is_file():
+            temp = folder / f".{name}.tmp"
+            temp.write_text(data, encoding="ascii", errors="replace", newline="")
+            temp.replace(target)
+        return name
+
+    def get_media(self, name: str) -> str:
+        if not isinstance(name, str) or not _MEDIA_FILE.fullmatch(name):
+            raise KeyError(name)
+        try:
+            with open(self.dir / "media" / name, encoding="ascii", newline="") as f:
+                return f.read()
+        except FileNotFoundError:
+            raise KeyError(name) from None
+
+
+def pack(value: Any, receipts: ReceiptStore) -> Any:
+    """A copy of ``value`` for the journal: each base64 source's data goes to the receipt store, by file name.
+
+    Media can be megabytes, and a journal line that size would make every
+    reader and the crash repair of the file slow. ``unpack`` restores the very
+    same strings, so a replayed history stays byte for byte the live one.
+    """
+    if isinstance(value, list):
+        return [pack(item, receipts) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") == "base64" and isinstance(value.get("data"), str):
+        media_type = str(value.get("media_type", ""))
+        return {**{k: v for k, v in value.items() if k != "data"}, "file": receipts.put_media(media_type, value["data"])}
+    return {key: pack(item, receipts) for key, item in value.items()}
+
+
+def unpack(value: Any, receipts: ReceiptStore) -> Any:
+    """The inverse of ``pack``; values journaled before packing existed pass through unchanged."""
+    if isinstance(value, list):
+        return [unpack(item, receipts) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") == "base64" and "file" in value and "data" not in value:
+        try:
+            data = receipts.get_media(value["file"])
+        except KeyError:
+            raise FileNotFoundError(f"media file {value['file']!r} is missing from {receipts.dir / 'media'}") from None
+        return {**{k: v for k, v in value.items() if k != "file"}, "data": data}
+    return {key: unpack(item, receipts) for key, item in value.items()}
+
 
 @dataclass(frozen=True)
 class ToolResultEntry:
     """One tool result as it enters the context.
 
-    ``content`` is already capped: a string, or a list of text and image blocks.
-    ``receipt`` names the stored full output, or is ``None`` when the output was
-    too short to be worth one; only results with a receipt are ever cleaned.
+    ``content`` is already capped: a string, or a list of text, image and
+    document blocks. ``receipt`` names the stored full output, or is ``None``
+    when the output was too short to be worth one. ``media`` names the file
+    its images or documents show when the agent can show it again (``view``).
+    Only results with a receipt or with ``media`` are ever cleaned.
     """
 
     call_id: str
     content: str | list[Block]
     is_error: bool = False
     receipt: str | None = None
+    media: str | None = None
+
+
+def _weight(value: Any) -> int:
+    """About the length of ``value`` as JSON, with every image or document weighed by its estimated tokens."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        if value.get("type") in MEDIA_BLOCKS:
+            return block_tokens(value) * CHARS_PER_TOKEN
+        return sum(len(key) + 4 + _weight(item) for key, item in value.items())
+    if isinstance(value, list):
+        return sum(_weight(item) + 1 for item in value)
+    return len(str(value))
 
 
 def _block_chars(block: Any) -> int:
-    """Characters the model reads in a block; image data is not text and is left out."""
+    """Characters the model reads in a block. Images and PDFs are weighed in estimated tokens
+    (``media.block_tokens``) times ``CHARS_PER_TOKEN``, never by their base64 size."""
     if isinstance(block, str):
         return len(block)
     match block.get("type"):
@@ -139,17 +216,19 @@ def _block_chars(block: Any) -> int:
             return len(block["text"])
         case "thinking":
             return len(block.get("thinking", ""))
-        case "image" | "redacted_thinking":
+        case "redacted_thinking":
             return 0
+        case "image" | "document":
+            return block_tokens(block) * CHARS_PER_TOKEN
         case "tool_use":
-            return len(block["name"]) + len(json.dumps(block["input"]))
+            return len(block["name"]) + _weight(block["input"])
         case "tool_result":
             content = block.get("content", "")
             if isinstance(content, str):
                 return len(content)
             return sum(_block_chars(b) for b in content)
         case _:
-            return len(json.dumps(block))
+            return _weight(block)
 
 
 class Context:
@@ -173,26 +252,44 @@ class Context:
         receipts: ReceiptStore,
         system: list[str],
         clock: Callable[[], float] = time.monotonic,
+        *,
+        can_view: bool = False,
     ) -> None:
         self._settings = settings
         self._receipts = receipts
         self._system: list[Block] = [{"type": "text", "text": text} for text in system]
         self._clock = clock
+        self._can_view = can_view
         self._messages: list[Message] = []
         self._receipt_of: dict[str, str] = {}
+        self._media_of: dict[str, str] = {}
         self._cleaned: set[str] = set()
+        self._attachments: dict[int, tuple[str, Block]] = {}
+        self._attached = 0
         self._last_call_at: float | None = None
         self._last_prompt_tokens = 0
         self._chars_at_call = 0
 
-    def add_user(self, text: str) -> None:
+    def add_user(self, text: str, attachments: Sequence[Attachment] = ()) -> None:
+        """Add a user message; ``attachments`` go before the text, each after a one-line label naming it.
+
+        Attachments are numbered in the order they enter, which replay
+        repeats, so a ``clean`` record can name them by number.
+        """
         if not text:
             raise ValueError("empty user text")
-        block = {"type": "text", "text": text}
+        blocks: list[Block] = []
+        for attachment in attachments:
+            self._attached += 1
+            media = copy.deepcopy(attachment.block)
+            label = f"[attachment {self._attached}: {attachment.name} ({attachment.note})]"
+            blocks += [{"type": "text", "text": label}, media]
+            self._attachments[self._attached] = (attachment.name, media)
+        blocks.append({"type": "text", "text": text})
         if self._messages and self._messages[-1]["role"] == "user":
-            self._messages[-1]["content"].append(block)
+            self._messages[-1]["content"].extend(blocks)
         else:
-            self._messages.append({"role": "user", "content": [block]})
+            self._messages.append({"role": "user", "content": blocks})
 
     def add_assistant(self, content: list[Block]) -> None:
         if not content:
@@ -227,6 +324,8 @@ class Context:
                 content.insert(at, block)
             if entry.receipt is not None:
                 self._receipt_of[entry.call_id] = entry.receipt
+            if entry.media is not None:
+                self._media_of[entry.call_id] = entry.media
 
     def _pending(self) -> list[str]:
         """Ids of the last assistant message's ``tool_use`` blocks that have no result yet, in order."""
@@ -264,15 +363,18 @@ class Context:
                 receipt = self._receipts.put(text)
         body = self._truncate(text, receipt, call.name == ReceiptTool.name) if over else text
         content: str | list[Block]
-        if output.images:
+        media = [("image", i.media_type, i.data) for i in output.images]
+        media += [("document", d.media_type, d.data) for d in output.documents]
+        if media:
             content = [{"type": "text", "text": body}] if body else []
             content += [
-                {"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}}
-                for i in output.images
+                {"type": kind, "source": {"type": "base64", "media_type": media_type, "data": data}}
+                for kind, media_type, data in media
             ]
         else:
             content = body or "(no output)"
-        return ToolResultEntry(call.id, content, output.is_error, receipt)
+        name = output.meta.get("media") if media else None
+        return ToolResultEntry(call.id, content, output.is_error, receipt, name if isinstance(name, str) else None)
 
     def _truncate(self, text: str, receipt: str | None, is_view: bool) -> str:
         s = self._settings
@@ -336,7 +438,11 @@ class Context:
         receipt are never touched. Nothing happens before the first model call
         or while the cache may still be warm: less than ``clean_after_seconds``
         or the ``cache_ttl``, whichever is longer, since the last call.
-        Image blocks of a cleaned result are kept: the receipt holds text only.
+        Image and document blocks of a cleaned result are kept, since the
+        receipt holds text only, unless the result names the file they show
+        (``ToolResultEntry.media``, from ``view``): those become a stub telling
+        the model to view the file again. A ``view`` result counts like any
+        other for ``clean_keep_recent``.
 
         Editing an earlier message has a second consequence besides the cache.
         What the fact sheet (section 6) states: on models with preserved
@@ -375,10 +481,7 @@ class Context:
         alternating (the docs warn that two same-role messages in a row make
         the API count positions differently).
         """
-        if self._last_call_at is None:
-            return []
-        wait = max(self._settings.clean_after_seconds, _TTL_SECONDS[self._settings.cache_ttl])
-        if self._clock() - self._last_call_at <= wait:
+        if not self._cold():
             return []
         order = [
             b["tool_use_id"]
@@ -392,7 +495,7 @@ class Context:
         ids = [
             c
             for c in order
-            if c in self._receipt_of and c not in self._cleaned and c not in protected
+            if (c in self._receipt_of or c in self._media_of) and c not in self._cleaned and c not in protected
         ]
         if ids:
             self._clean(ids)
@@ -407,16 +510,60 @@ class Context:
                 continue
             for block in message["content"]:
                 if block["type"] == "tool_result" and block["tool_use_id"] in targets:
-                    stub = self._stub(self._receipt_of[block["tool_use_id"]])
+                    receipt = self._receipt_of.get(block["tool_use_id"])
+                    name = self._media_of.get(block["tool_use_id"])
                     content = block["content"]
                     if isinstance(content, list):
-                        images = [b for b in content if b["type"] == "image"]
-                        block["content"] = [{"type": "text", "text": stub}, *images]
-                    else:
-                        block["content"] = stub
+                        kept = [{"type": "text", "text": self._stub(receipt)}] if receipt else []
+                        for part in content:
+                            if part["type"] in MEDIA_BLOCKS:
+                                kept.append(_media_stub(part, name) if name else part)
+                            elif receipt is None:
+                                kept.append(part)
+                        block["content"] = kept
+                    elif receipt:
+                        block["content"] = self._stub(receipt)
                     if first is None:
                         first = index
         self._cleaned |= targets
+        if first is not None:
+            self._strip_thinking(first)
+
+    def _cold(self) -> bool:
+        """Whether the cache has surely expired: a model call happened, and longer than its TTL ago."""
+        if self._last_call_at is None:
+            return False
+        wait = max(self._settings.clean_after_seconds, _TTL_SECONDS[self._settings.cache_ttl])
+        return self._clock() - self._last_call_at > wait
+
+    def clean_attachments_if_cold(self) -> list[int]:
+        """Replace old attachments with a one-line stub when the cache is cold, if the agent can ``view`` them.
+
+        An attachment is a file the human sent; its label (the line before it)
+        stays and names the file, and the stub says to view it again. Those in
+        the last user message are kept, and nothing is touched for an agent
+        without ``view``: it could never see the file again. The edit has the
+        same effect on thinking blocks as ``clean_if_cold``.
+        """
+        if not self._can_view or not self._cold() or not self._messages:
+            return []
+        last = self._messages[-1]
+        recent = {id(b) for b in last["content"]} if last["role"] == "user" else set()
+        numbers = [n for n, (_, block) in self._attachments.items() if id(block) not in recent]
+        if numbers:
+            self._clean_attachments(numbers)
+        return numbers
+
+    def _clean_attachments(self, numbers: Iterable[int]) -> None:
+        """Apply an attachment clean; a pure function of the history and ``numbers``, as ``_clean`` is."""
+        targets = {id(self._attachments[n][1]): n for n in numbers if n in self._attachments}
+        first: int | None = None
+        for index, message in enumerate(self._messages):
+            for position, block in enumerate(message["content"]):
+                if id(block) in targets:
+                    name, _ = self._attachments.pop(targets[id(block)])
+                    message["content"][position] = _media_stub(block, name)
+                    first = index if first is None else first
         if first is not None:
             self._strip_thinking(first)
 
@@ -523,7 +670,10 @@ class Context:
             b["tool_use_id"] for m in self._messages for b in m["content"] if b["type"] == "tool_result"
         }
         self._receipt_of = {c: r for c, r in self._receipt_of.items() if c in alive}
+        self._media_of = {c: m for c, m in self._media_of.items() if c in alive}
         self._cleaned &= alive
+        present = {id(b) for m in self._messages for b in m["content"]}
+        self._attachments = {n: a for n, a in self._attachments.items() if id(a[1]) in present}
         self._chars_at_call = 0
 
     def repair_dangling(self, reason: str) -> list[ToolResultEntry]:
@@ -547,24 +697,40 @@ class Context:
         """
         self._messages = []
         self._receipt_of.clear()
+        self._media_of.clear()
         self._cleaned.clear()
+        self._attachments.clear()
+        self._attached = 0
+        receipts = self._receipts
         for record in records:
             data = record.data
             match record.kind:
                 case "user":
-                    self.add_user(data["text"])
+                    attachments = [
+                        Attachment(a["name"], unpack(a["block"], receipts), a["note"])
+                        for a in data.get("attachments", [])
+                    ]
+                    self.add_user(data["text"], attachments)
                 case "assistant":
-                    self.add_assistant(data["content"])
+                    self.add_assistant(unpack(data["content"], receipts))
                 case "tool_result":
-                    self.add_tool_results(
-                        [ToolResultEntry(data["call_id"], data["content"], data["is_error"], data.get("receipt"))]
+                    content = unpack(data["content"], receipts)
+                    entry = ToolResultEntry(
+                        data["call_id"], content, data["is_error"], data.get("receipt"), data.get("media")
                     )
+                    self.add_tool_results([entry])
                 case "clean":
                     self._clean(list(data["call_ids"]))
+                    self._clean_attachments(data.get("attachments", []))
                 case "compaction":
                     self.apply_compaction(data["summary"], data.get("keep", 0))
                 case "resume":
                     self._strip_thinking(-1)
+
+
+def _media_stub(block: Block, name: str) -> Block:
+    kind = "PDF" if block.get("type") == "document" else "image"
+    return {"type": "text", "text": f"[{kind} {name} removed to save context: view the file again to see it]"}
 
 
 class ReceiptTool:

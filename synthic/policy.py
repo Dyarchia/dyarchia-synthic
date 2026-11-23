@@ -102,7 +102,7 @@ from .types import (
     Role,
 )
 
-ROLE_TOOLS = ("sh", "edit", "spawn", "skill", "mcp")
+ROLE_TOOLS = ("sh", "edit", "view", "spawn", "skill", "mcp")
 """Every tool a role can grant. The engine tools (``done``, ``ask``, ``receipt``) need no grant; ``sh`` brings
 ``job`` and ``spawn`` brings ``agent``."""
 

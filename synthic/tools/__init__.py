@@ -8,6 +8,7 @@ from ..types import EnvironmentSettings, Tool
 from .edit import EditTool
 from .jobs import JobManager, JobTool
 from .sh import ShTool
+from .view import ViewTool
 
 
 def to_definition(tool: Tool) -> dict[str, Any]:
@@ -16,6 +17,6 @@ def to_definition(tool: Tool) -> dict[str, Any]:
 
 
 def builtin_tools(settings: EnvironmentSettings, jobs: JobManager) -> dict[str, Tool]:
-    """``sh``, ``edit`` and ``job``, keyed by name; ``sh`` and ``job`` share ``jobs``."""
-    tools: list[Tool] = [ShTool(settings, jobs), EditTool(), JobTool(jobs)]
+    """``sh``, ``edit``, ``job`` and ``view``, keyed by name; ``sh`` and ``job`` share ``jobs``."""
+    tools: list[Tool] = [ShTool(settings, jobs), EditTool(), JobTool(jobs), ViewTool()]
     return {tool.name: tool for tool in tools}

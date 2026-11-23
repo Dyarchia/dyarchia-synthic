@@ -29,7 +29,7 @@ import itertools
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -51,7 +51,7 @@ from .loop import ENGINE_TOOLS, Agent, AgentResult, Question
 from .plugins import load_plugins
 from .policy import LoadedPolicy, PolicyError, spawn_role
 from .provider import AnthropicProvider
-from .types import Budget, Provider, Role, ToolContext, ToolOutput, Usage
+from .types import Attachment, Budget, Provider, Role, ToolContext, ToolOutput, Usage
 
 OutputCallback = Callable[[str, str, str], None]
 
@@ -343,8 +343,11 @@ class Runtime:
         for callback in list(self._callbacks):
             callback(agent_id, kind, text)
 
-    async def run(self, task: str, role: str | None = None) -> AgentResult:
-        """Run the root agent on ``task`` with ``role`` (default ``policy.initial_role``) until it ends."""
+    async def run(self, task: str, role: str | None = None, attachments: Sequence[Attachment] = ()) -> AgentResult:
+        """Run the root agent on ``task`` with ``role`` (default ``policy.initial_role``) until it ends.
+
+        ``attachments`` are files (``media.load``) sent with the task.
+        """
         name = role or self.policy.initial_role
         if name not in self.policy.roles:
             raise PolicyError([f"role '{name}' is not defined"])
@@ -352,7 +355,7 @@ class Runtime:
             raise RuntimeError("this runtime has already run; build a new one for another task")
         for warning in self.warnings:
             self.output(ROOT_ID, "warning", warning)
-        self.root_agent = Agent(self, ROOT_ID, self.policy.roles[name], task, self.root)
+        self.root_agent = Agent(self, ROOT_ID, self.policy.roles[name], task, self.root, attachments=attachments)
         self.agents[ROOT_ID] = self.root_agent
         return await self._run_root()
 
@@ -371,7 +374,7 @@ class Runtime:
             beat(self.run_dir)
             await asyncio.sleep(HEARTBEAT_SECONDS)
 
-    async def resume(self, text: str | None = None) -> AgentResult:
+    async def resume(self, text: str | None = None, attachments: Sequence[Attachment] = ()) -> AgentResult:
         """Continue the run whose folder this runtime was built on, from the root journal.
 
         A run cut by a crash goes on where it stopped. A root that ended
@@ -398,7 +401,7 @@ class Runtime:
             return AgentResult(ROOT_ID, end.data["status"], end.data["summary"], usage, steps)
         numbers = [int(m.group(1)) for a in agents_in(self.run_dir) if (m := re.fullmatch(r"a(\d+)(?:\.\d+)?", a))]
         self._ids = itertools.count(max(numbers, default=0) + 1)
-        self.root_agent = Agent.resume(self, ROOT_ID, text)
+        self.root_agent = Agent.resume(self, ROOT_ID, text, attachments)
         self.agents[ROOT_ID] = self.root_agent
         return await self._run_root()
 
@@ -441,9 +444,9 @@ class Runtime:
         if self.root_agent is not None:
             self.root_agent.stop()
 
-    def add(self, text: str, agent_id: str | None = None) -> None:
+    def add(self, text: str, agent_id: str | None = None, attachments: Sequence[Attachment] = ()) -> None:
         """Queue a human message for an agent (the root by default); it enters at the agent's next step."""
-        self._agent(agent_id).add(text)
+        self._agent(agent_id).add(text, attachments=attachments)
 
     def redirect(self, text: str, agent_id: str | None = None) -> None:
         """Abort what an agent (the root by default) is doing and continue with ``text`` as the new message."""

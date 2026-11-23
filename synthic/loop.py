@@ -53,12 +53,12 @@ import itertools
 import json
 import os
 import time
-from collections.abc import Awaitable, Coroutine
+from collections.abc import Awaitable, Coroutine, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry
+from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
 from .prompt import build_system
@@ -66,6 +66,7 @@ from .tools import builtin_tools, to_definition
 from .tools.edit import resolve
 from .tools.jobs import JobManager
 from .types import (
+    Attachment,
     Block,
     Decision,
     HookOutcome,
@@ -221,7 +222,7 @@ class Agent:
     project, whose ``changes`` are reported when it ends. ``steps_before``
     counts the steps earlier attempts of the same child already spent against
     ``max_steps``. ``system`` and ``tool_defs`` are given only on resume, from
-    the ``start`` record.
+    the ``start`` record. ``attachments`` go with the task, in its first message.
     """
 
     def __init__(
@@ -239,6 +240,7 @@ class Agent:
         steps_before: int = 0,
         system: list[str] | None = None,
         tool_defs: list[Block] | None = None,
+        attachments: Sequence[Attachment] = (),
     ) -> None:
         self.runtime = runtime
         self.policy = runtime.policy
@@ -264,7 +266,8 @@ class Agent:
             system = [masker.mask(text) for text in texts]
         self.tool_defs: list[Block] = tool_defs
         self.system: list[str] = system
-        self.context = Context(self.policy.context, self.receipts, self.system)
+        self.context = Context(self.policy.context, self.receipts, self.system, can_view="view" in self.tools)
+        self._attachments = list(attachments)
         self.usage = Usage()
         self.steps = 0
         self.steps_before = steps_before
@@ -278,7 +281,7 @@ class Agent:
         self._cancel = asyncio.Event()
         self._mode: Literal["stop", "cancel", "redirect"] | None = None
         self._redirects: list[str] = []
-        self._inbox: list[tuple[str, str]] = []
+        self._inbox: list[tuple[str, str, Sequence[Attachment]]] = []
         self._wake = asyncio.Event()
         self._finish: tuple[Status, str] | None = None
         self._idle_turns = 0
@@ -291,7 +294,7 @@ class Agent:
         self._repeat_warned = False
         self._questions = itertools.count(1)
         self._resumed = False
-        self._next_task: str | None = None
+        self._next_task: tuple[str, Sequence[Attachment]] | None = None
 
     def _build_tools(self) -> dict[str, Tool]:
         """The fixed tool list: engine tools, then what the role grants. It never changes during the run (cache).
@@ -311,6 +314,8 @@ class Agent:
             tools["job"] = builtin["job"]
         if "edit" in granted:
             tools["edit"] = builtin["edit"]
+        if "view" in granted:
+            tools["view"] = builtin["view"]
         if "spawn" in granted and self.role.can_spawn and self.depth < self.policy.agents.depth:
             tools.update(self.runtime.spawn_tools(self))
         for name, tool in self.runtime.plugin_tools.items():
@@ -319,14 +324,16 @@ class Agent:
         return tools
 
     @classmethod
-    def resume(cls, runtime: Runtime, agent_id: str, text: str | None = None) -> Agent:
+    def resume(
+        cls, runtime: Runtime, agent_id: str, text: str | None = None, attachments: Sequence[Attachment] = ()
+    ) -> Agent:
         """Rebuild an agent from its journal, ready to ``run()`` on: after a crash, or after it ended.
 
         Tool calls whose intent was journaled without a result are answered as
         "outcome unknown"; calls that never got an intent are answered as
         cancelled. Children that were running are reported as cancelled, and
         their journals get a ``done`` record saying so. ``text`` enters as a
-        new message from the human; without it, an agent that had ended (or a
+        new message from the human, with ``attachments``; without it, an agent that had ended (or a
         history that ends on the model's turn) gets an engine notice, since a
         request must not end on an assistant message.
         """
@@ -348,10 +355,10 @@ class Agent:
             system=start.data.get("system"),
             tool_defs=start.data.get("tools"),
         )
-        agent._restore(records, text)
+        agent._restore(records, text, attachments)
         return agent
 
-    def _restore(self, records: list[Record], text: str | None) -> None:
+    def _restore(self, records: list[Record], text: str | None, attachments: Sequence[Attachment] = ()) -> None:
         self._resumed = True
         self.journal.append("resume", {})
         self.context.replay(records)
@@ -393,9 +400,9 @@ class Agent:
             calls = [r for r in records if r.kind == "model_call" and "purpose" not in r.data]
             if calls:
                 self.context.restore_measure(Usage(**calls[-1].data["usage"]).context_tokens)
-            self._next_task = text
+            self._next_task = (text, attachments)
         elif text and text.strip():
-            self._add_user(text, "human")
+            self._add_user(text, "human", attachments)
         elif end is not None or (messages and messages[-1]["role"] == "assistant"):
             self._add_user(
                 "[The human resumed this run after it was interrupted. Continue the task, or call `done` if it is "
@@ -422,7 +429,7 @@ class Agent:
                         "tools": self.tool_defs,
                     },
                 )
-                self._add_user(self.task, "parent" if self.parent_id else "human")
+                self._add_user(self.task, "parent" if self.parent_id else "human", self._attachments)
                 await self._emit("start", role=self.role.name, task=self.task, parent=self.parent_id)
             self.runtime.output(self.id, "agent_start", f"{self.role.name}: {_short(self.task)}")
             while self._finish is None:
@@ -456,13 +463,13 @@ class Agent:
         self._cancel.set()
         self._wake.set()
 
-    def add(self, text: str, source: str = "human") -> None:
+    def add(self, text: str, source: str = "human", attachments: Sequence[Attachment] = ()) -> None:
         """Queue a message; it enters the context at the next step boundary. Empty text is ignored."""
         if not text.strip() or not self.running:
             return
         if source == "human":
             self.journal.append("interrupt", {"mode": "add"})
-        self._inbox.append((source, text))
+        self._inbox.append((source, text, attachments))
         self._wake.set()
 
     def redirect(self, text: str) -> None:
@@ -515,23 +522,31 @@ class Agent:
             self.journal.append("hook", {"event": event, "action": outcome.action, "reason": outcome.reason})
         return outcome
 
-    def _add_user(self, text: str, source: str) -> None:
-        text = self.runtime.masker.mask(text)
-        self.context.add_user(text)
-        self.journal.append("user", {"text": text, "source": source})
+    def _add_user(self, text: str, source: str, attachments: Sequence[Attachment] = ()) -> None:
+        """Mask, add and journal a user message; attachment data is journaled by reference (``context.pack``)."""
+        mask = self.runtime.masker.mask
+        text = mask(text)
+        attachments = [replace(a, name=mask(a.name), note=mask(a.note)) for a in attachments]
+        self.context.add_user(text, attachments)
+        data: dict[str, Any] = {"text": text, "source": source}
+        if attachments:
+            data["attachments"] = [
+                {"name": a.name, "note": a.note, "block": pack(a.block, self.receipts)} for a in attachments
+            ]
+        self.journal.append("user", data)
 
     def _journal_result(self, call_id: str, name: str, entry: ToolResultEntry, seconds: float) -> None:
-        self.journal.append(
-            "tool_result",
-            {
-                "call_id": call_id,
-                "name": name,
-                "content": entry.content,
-                "is_error": entry.is_error,
-                "receipt": entry.receipt,
-                "seconds": round(seconds, 3),
-            },
-        )
+        data: dict[str, Any] = {
+            "call_id": call_id,
+            "name": name,
+            "content": pack(entry.content, self.receipts),
+            "is_error": entry.is_error,
+            "receipt": entry.receipt,
+            "seconds": round(seconds, 3),
+        }
+        if entry.media is not None:
+            data["media"] = entry.media
+        self.journal.append("tool_result", data)
 
     def _repair(self, reason: str) -> None:
         for entry in self.context.repair_dangling(reason):
@@ -549,10 +564,10 @@ class Agent:
             self.runtime.output(self.id, "warning", warning)
             self._add_user(f"[budget] {warning}. Plan to finish within the budget.", "engine")
         if self._next_task is not None:
-            text, self._next_task = self._next_task, None
+            (text, attachments), self._next_task = self._next_task, None
             if self.context.boundary_due() and (await self._emit("before_compaction")).action != "block":
                 await self._compact()
-            self._add_user(text, "human")
+            self._add_user(text, "human", attachments)
         self._deliver()
         self._model, self._next_model = self._next_model or self.role.model, None
         await self._maintain_context()
@@ -613,12 +628,17 @@ class Agent:
                 handle.reported = True
                 self._add_user(handle.notice(), "engine")
         inbox, self._inbox = self._inbox, []
-        for source, text in inbox:
-            self._add_user(text, source)
+        for source, text, attachments in inbox:
+            self._add_user(text, source, attachments)
 
     async def _maintain_context(self) -> None:
-        if cleaned := self.context.clean_if_cold():
-            self.journal.append("clean", {"call_ids": cleaned})
+        cleaned = self.context.clean_if_cold()
+        attachments = self.context.clean_attachments_if_cold()
+        if cleaned or attachments:
+            record: dict[str, Any] = {"call_ids": cleaned}
+            if attachments:
+                record["attachments"] = attachments
+            self.journal.append("clean", record)
         due = self.context.should_compact(self.spec()) and (
             self._compact_retry_at is None or self.context.last_prompt_tokens >= self._compact_retry_at
         )
@@ -755,7 +775,7 @@ class Agent:
             blocks.append(masked)
         if blocks:
             self.context.add_assistant(blocks)
-            self.journal.append("assistant", {"content": blocks})
+            self.journal.append("assistant", {"content": pack(blocks, self.receipts)})
 
     async def _act(self, reply: ModelReply) -> None:
         """Do what the provider docstring prescribes for each stop reason."""
@@ -834,7 +854,7 @@ class Agent:
         match call.name:
             case "sh":
                 return str(tool_input.get("command", ""))
-            case "edit":
+            case "edit" | "view":
                 raw = tool_input.get("path")
                 if not isinstance(raw, str) or not raw:
                     return ""

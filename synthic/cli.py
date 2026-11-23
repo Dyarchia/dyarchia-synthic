@@ -37,8 +37,10 @@ from typing import Any, TextIO
 from .agents import Runtime
 from .journal import agents_in, ended, is_alive, list_runs, prune, read_records
 from .loop import AgentResult
+from .media import MediaError
+from .media import load as load_media
 from .policy import LoadedPolicy, PolicyError, load_policy
-from .types import Provider, Record, Usage
+from .types import Attachment, Provider, Record, Usage
 
 CONTROL_FILE = "control.jsonl"
 POLL_SECONDS = 0.5
@@ -330,8 +332,11 @@ class Control:
                     note("stop requested")
                     self.runtime.stop()
                 case "say":
-                    self.runtime.add(text, command.get("agent"))
-                    note(f"message queued for {command.get('agent') or 'the agent'}")
+                    files = [str(f) for f in command.get("attach", []) or []]
+                    extra = {"attachments": attachments(files)} if files else {}
+                    self.runtime.add(text, command.get("agent"), **extra)
+                    shown = f" with {len(files)} attachment{'s' if len(files) > 1 else ''}" if files else ""
+                    note(f"message queued for {command.get('agent') or 'the agent'}{shown}")
                 case "redirect":
                     self.runtime.redirect(text, command.get("agent"))
                     note(f"redirecting {command.get('agent') or 'the agent'}")
@@ -348,6 +353,8 @@ class Control:
                     note(f"unknown control command {other!r}")
         except KeyError as error:
             note(str(error.args[0]))
+        except CliError as error:
+            note(f"not sent: {error}")
 
     async def watch(self, path: Path, offset: int) -> None:
         """Apply the complete lines appended to ``path`` after ``offset``, polling by file size."""
@@ -373,6 +380,14 @@ class Control:
                     self.apply(command)
                 else:
                     self.printer.note("ignored a malformed line of control.jsonl")
+
+
+def attachments(paths: Iterable[str]) -> list[Attachment]:
+    """Load and check each file given with ``--attach``; the first one the API would refuse is a usage error."""
+    try:
+        return [load_media(path) for path in paths]
+    except MediaError as error:
+        raise CliError(f"cannot attach {error}") from None
 
 
 def should_listen(stdin: TextIO | None, task_from_stdin: bool) -> bool:
@@ -435,6 +450,7 @@ async def drive(
     run_id: str | None = None,
     text: str | None = None,
     listen: bool = False,
+    files: Sequence[Attachment] = (),
 ) -> int:
     runtime = Runtime(loaded, cwd, factory() if factory else None, run_id=run_id)
     runtime.on_output(printer)
@@ -445,7 +461,7 @@ async def drive(
     loop = asyncio.get_running_loop()
     path = runtime.run_dir / CONTROL_FILE
     offset = path.stat().st_size if path.exists() else 0
-    job = asyncio.ensure_future(runtime.resume(text) if run_id else runtime.run(task, role))
+    job = asyncio.ensure_future(runtime.resume(text, files) if run_id else runtime.run(task, role, files))
     watcher = loop.create_task(control.watch(path, offset))
     restore = install_sigint(loop, control)
     if listen:
@@ -505,9 +521,12 @@ def cmd_run(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     role = args.role or loaded.policy.initial_role
     if role not in loaded.policy.roles:
         raise CliError(f"role '{role}' is not defined")
+    files = attachments(args.attach)
     require_key(factory)
     listen = should_listen(sys.stdin, from_stdin)
-    return asyncio.run(drive(loaded, cwd, factory, printer_for(args), task=task, role=args.role, listen=listen))
+    return asyncio.run(
+        drive(loaded, cwd, factory, printer_for(args), task=task, role=args.role, listen=listen, files=files)
+    )
 
 
 def cmd_resume(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
@@ -520,11 +539,14 @@ def cmd_resume(args: argparse.Namespace, factory: ProviderFactory | None) -> int
     if is_alive(run_dir):
         raise CliError(f"run {run_dir.name} is running in another process: stop it first, or wait for it to end")
     cwd = Path(args.cwd or start.data.get("cwd") or Path.cwd()).resolve()
+    text = " ".join(words) or None
+    if args.attach and not text:
+        raise CliError("--attach goes with a message: synthic resume [run-id] \"<text>\" --attach FILE")
+    files = attachments(args.attach)
     require_key(factory)
     listen = should_listen(sys.stdin, False)
-    text = " ".join(words) or None
     return asyncio.run(
-        drive(loaded, cwd, factory, printer_for(args), run_id=run_dir.name, text=text, listen=listen)
+        drive(loaded, cwd, factory, printer_for(args), run_id=run_dir.name, text=text, listen=listen, files=files)
     )
 
 
@@ -610,7 +632,9 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
         case "start":
             return f"start {data.get('role')} in {data.get('cwd')}: {fit(data.get('task', ''))}"
         case "user":
-            return f"user [{data.get('source')}]: {fit(data.get('text', ''))}"
+            files = [str(a.get("name", "")) for a in data.get("attachments", [])]
+            shown = f" (attached: {', '.join(files)})" if files else ""
+            return f"user [{data.get('source')}]: {fit(data.get('text', ''))}{shown}"
         case "assistant":
             says = "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
             return f"says: {fit(says)}" if says.strip() else None
@@ -735,7 +759,7 @@ def cmd_prune(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     return 0
 
 
-def send_control(loaded: LoadedPolicy, run_id: str | None, command: dict[str, str]) -> int:
+def send_control(loaded: LoadedPolicy, run_id: str | None, command: dict[str, Any]) -> int:
     run_dir = run_folder(loaded, run_id)
     if not is_alive(run_dir):
         hint = f' Use: synthic resume {run_dir.name} "<text>"' if command["cmd"] == "say" else ""
@@ -771,7 +795,9 @@ def cmd_say(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     _, loaded = load(args)
     run_id, words = split_run(loaded, args.words, 1)
     agent = {"agent": args.agent} if args.agent else {}
-    return send_control(loaded, run_id, {"cmd": args.command, "text": " ".join(words), **agent})
+    files = [a.name for a in attachments(getattr(args, "attach", []))]
+    extra: dict[str, Any] = {"attach": files} if files else {}
+    return send_control(loaded, run_id, {"cmd": args.command, "text": " ".join(words), **agent, **extra})
 
 
 def cmd_answer(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
@@ -792,6 +818,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode = output.add_mutually_exclusive_group()
     mode.add_argument("--quiet", action="store_true", help="print only the final summary")
     mode.add_argument("--json", action="store_true", help="print one JSON object per event")
+    attach = argparse.ArgumentParser(add_help=False)
+    attach.add_argument(
+        "--attach", action="append", default=[], metavar="FILE", help="send an image or a PDF with the message"
+    )
 
     parser = argparse.ArgumentParser(prog="synthic", description="An agent harness: the engine and nothing else.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
@@ -801,11 +831,13 @@ def build_parser() -> argparse.ArgumentParser:
         sub.set_defaults(handler=handler)
         return sub
 
-    run = add("run", cmd_run, "run a task to the end without prompting", output)
+    run = add("run", cmd_run, "run a task to the end without prompting", output, attach)
     run.add_argument("task", nargs="?", help='the task, or "-" to read it from stdin')
     run.add_argument("--task-file", metavar="FILE", help="read the task from a file")
     run.add_argument("--role", help="the role of the root agent (default: initial_role)")
-    resume = add("resume", cmd_resume, "continue a crashed or stopped run, or an ended one when given a text", output)
+    resume = add(
+        "resume", cmd_resume, "continue a crashed or stopped run, or an ended one when given a text", output, attach
+    )
     resume.add_argument("words", nargs="*", metavar="[RUN_ID] [TEXT]", help="run (default: the most recent) and a message")
     runs = add("runs", cmd_runs, "list the recent runs, newest first")
     runs.add_argument("--limit", type=int, default=20, help="how many runs to list (default 20)")
@@ -820,7 +852,7 @@ def build_parser() -> argparse.ArgumentParser:
     stop = add("stop", cmd_stop, "stop a running run from another terminal")
     stop.add_argument("run_id", nargs="?", help="default: the most recent run")
     for name, help_text in (("say", "add a message for the agent of a running run"), ("redirect", "redirect a running run")):
-        sub = add(name, cmd_say, help_text)
+        sub = add(name, cmd_say, help_text, *([attach] if name == "say" else []))
         sub.add_argument("words", nargs="+", metavar="[RUN_ID] TEXT")
         sub.add_argument("--agent", metavar="ID", help="address a child agent instead of the root")
     answer = add("answer", cmd_answer, "answer an open question of a running run")

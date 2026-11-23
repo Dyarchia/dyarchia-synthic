@@ -93,6 +93,27 @@ With `environment.mode = "copy"`, each child works in a copy, on the git branch
   agents only read it. `memory.enabled = false`
   turns it off.
 
+## Images and PDFs
+
+```bash
+synthic run "Make the page look like this" --attach mockup.png
+synthic resume [run-id] "Now follow this spec too" --attach spec.pdf
+synthic say [run-id] "This is the error" --attach screenshot.png
+```
+
+- `--attach` is repeatable. JPEG, PNG, GIF and WebP go as image blocks and PDFs as document blocks, before
+  the text of the message, each after a one-line label with its path. The type comes from the file's bytes.
+- A file the API would refuse is refused before anything starts: another type, an image over 10 MB of base64
+  or 8000x8000 px, a PDF over 128 MB or 600 pages, an encrypted PDF. Above 20 images in one request the API
+  applies a stricter size limit, which is not checked.
+- The journal keeps each file once, by hash, under `<agent>/receipts/media/`, so a resume rebuilds the
+  same bytes. Media counts toward the context size by its estimated tokens, not its base64 length.
+- The `view` tool (grant it in `role.<name>.tools`; no default role has it) shows the model an image or a
+  PDF from disk. A file the API would refuse is not sent: the result says why. There is no resizing.
+- When the cache is cold, an agent that has `view` gets old attachments and old `view` results replaced by
+  a one-line stub naming the file, like old tool outputs. Without `view` attachments are kept, since the
+  model could not see them again. Compaction summarizes them with the rest.
+
 ## Interrupting a run
 
 From the same terminal (when stdin is a terminal), type a line while the run goes:
@@ -146,6 +167,7 @@ text. A run that is alive in another process is refused.
 sh       run a shell command; a long one moves to the background
 job      follow, wait for or kill a background command
 edit     replace exact text in a file, or create a file
+view     look at an image or a PDF
 spawn    start a child agent on a task
 agent    list, wait for, message or cancel child agents
 ask      ask the human, with the assumption to proceed on

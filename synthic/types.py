@@ -9,7 +9,7 @@ Conventions that hold across the whole engine:
 * Conversation history is kept in the provider's native shape: a list of
   ``{"role": "user" | "assistant", "content": [block, ...]}`` dicts whose blocks
   are Anthropic content blocks (``text``, ``thinking``, ``tool_use``,
-  ``tool_result``, ``image``). Nothing is translated back and forth, which keeps
+  ``tool_result``, ``image``, ``document``). Nothing is translated back and forth, which keeps
   the cached prefix byte-stable.
 * The engine has no opinions. Every number and every choice lives in the policy
   (see ``defaults.toml``); code never hardcodes a model, a limit or a permission.
@@ -152,13 +152,36 @@ class ImageData:
 
 
 @dataclass
+class DocumentData:
+    """A PDF returned by a tool. ``data`` is base64 text."""
+
+    media_type: str
+    data: str
+
+
+@dataclass
 class ToolOutput:
-    """What a tool returns to the loop, before the context module caps it."""
+    """What a tool returns to the loop, before the context module caps it.
+
+    ``meta["media"]`` names the file that ``images`` or ``documents`` came from
+    when the tool can show it again (``view``): only such media is ever removed
+    from an old result to save context.
+    """
 
     text: str = ""
     images: list[ImageData] = field(default_factory=list)
     is_error: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
+    documents: list[DocumentData] = field(default_factory=list)
+
+
+@dataclass
+class Attachment:
+    """A file sent with a human message: its absolute path, its ``image`` or ``document`` block, a short note."""
+
+    name: str
+    block: Block
+    note: str
 
 
 @dataclass
@@ -398,7 +421,11 @@ class Record:
     * ``start``: ``{run_id, role, task, cwd, parent, system, tools}`` where
       ``system`` is the list of system texts and ``tools`` the tool definitions
       exactly as sent; a resumed agent reuses both instead of rebuilding them
-    * ``user``: ``{text, source}`` with source ``human``, ``parent``, ``engine`` or ``hook``
+    * ``user``: ``{text, source}`` with source ``human``, ``parent``, ``engine`` or ``hook``, plus
+      ``attachments: [{name, note, block}]`` when files came with it
+    * every base64 ``source`` inside ``user``, ``assistant`` and ``tool_result`` records is journaled as
+      ``{type: "base64", media_type, file}``: the data itself is stored once under ``receipts/media``
+      and read back on replay (``context.pack`` and ``context.unpack``)
     * ``model_call``: ``{model_id, stop_reason, usage, cost_usd}``, plus
       ``purpose: "compaction"`` for a call that is not a step of the loop
     * ``fallback``: ``{from, to, reason}`` the next model call goes to the
@@ -408,8 +435,10 @@ class Record:
     * ``tool_intent``: ``{call_id, name, input}`` written before the tool runs
     * ``tool_result``: ``{call_id, name, content, is_error, receipt, seconds}``
       where ``content`` is exactly what entered the context; ``name`` is empty
-      for a call answered by a repair (interrupted or dead process)
-    * ``clean``: ``{call_ids}`` tool results replaced by their receipt stub
+      for a call answered by a repair (interrupted or dead process); plus
+      ``media`` (the file shown) for a result whose media can be shown again
+    * ``clean``: ``{call_ids}`` tool results replaced by their receipt stub, plus ``attachments``
+      (their numbers) when old attachments were replaced by a stub
     * ``compaction``: ``{summary, keep}`` history replaced by this summary plus its last ``keep`` messages
     * ``spawn``: ``{child_id, role, task}``
     * ``child_done``: ``{child_id, status, summary}``
