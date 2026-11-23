@@ -292,6 +292,8 @@ class Role:
     max_output_tokens: int | None = None
     instructions: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    result_schema: dict[str, Any] | None = None
+    """A JSON Schema the ``result`` of a delivering ``done`` must match (``schema.py``); ``None``: no result."""
 
 
 @dataclass(frozen=True)

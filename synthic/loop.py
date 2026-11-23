@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from . import verify, web
+from .schema import validate as validate_result
 from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
@@ -114,7 +115,10 @@ YES = frozenset({"y", "yes", "allow", "ok", "approve", "approved", "true"})
 
 @dataclass
 class AgentResult:
-    """How an agent ended. ``usage`` is this agent's own; ``changes`` is set only for agents that worked in a copy."""
+    """How an agent ended. ``usage`` is this agent's own; ``changes`` is set only for agents that worked in a copy.
+
+    ``result`` is the structured delivery of a role with a ``result_schema``, already validated against it.
+    """
 
     agent_id: str
     status: Status
@@ -122,6 +126,7 @@ class AgentResult:
     usage: Usage
     steps: int
     changes: str = ""
+    result: Any = None
 
 
 @dataclass(eq=False)
@@ -166,6 +171,15 @@ async def wait_any(*waits: Awaitable[Any], timeout: float | None = None) -> None
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _result_schema(tool_defs: list[Block]) -> dict[str, Any] | None:
+    """The ``result`` schema inside the journaled definition of ``done``, if it has one."""
+    for definition in tool_defs:
+        if definition.get("name") == "done":
+            result = definition.get("input_schema", {}).get("properties", {}).get("result")
+            return result if isinstance(result, dict) else None
+    return None
+
+
 class _DoneTool:
     name = "done"
     description = (
@@ -184,6 +198,14 @@ class _DoneTool:
 
     def __init__(self, agent: Agent) -> None:
         self._agent = agent
+        if (schema := agent.result_schema) is not None:
+            """Only a role with a schema pays for it: the schema becomes the ``result`` property, so the
+            model reads it where it writes the value. It is not in ``required``, since a ``failed``
+            delivery has no result; the engine requires it for ``delivered``. ``input_schema`` is a JSON
+            Schema object: https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools"""
+            self.description += " This role must also give `result`, a value matching the schema of that property."
+            properties = {**self.input_schema["properties"], "result": schema}
+            self.input_schema = {**self.input_schema, "properties": properties}
 
     def resource(self, tool_input: dict[str, Any], ctx: ToolContext) -> str | None:
         return None
@@ -257,6 +279,8 @@ class Agent:
         self.receipts = ReceiptStore(self.journal.dir / "receipts")
         self.jobs = JobManager(sandbox=runtime.sandbox)
         self.children: dict[str, ChildHandle] = {}
+        self.result_schema = role.result_schema if tool_defs is None else _result_schema(tool_defs)
+        """The schema a delivery's ``result`` must match; a resumed agent keeps the one its ``done`` was shown."""
         self.tools = self._build_tools()
         masker = runtime.masker
         if tool_defs is None:
@@ -308,6 +332,8 @@ class Agent:
         self._resumed = False
         self._paused = False
         self.rejections = 0
+        self._result: tuple[Any] | None = None
+        """The delivered ``result``, as a 1-tuple so that a JSON ``null`` result is still a result."""
         self.ended_by_done = False
         """Whether the agent ended by calling ``done``, rather than by a cap, an interrupt or a failure."""
         """Deliveries ``verify`` rejected since the last ``done``; restored from the journal on resume."""
@@ -1108,6 +1134,13 @@ class Agent:
         if not summary:
             return ToolOutput("`summary` is required: say what was done and how it was verified.", is_error=True)
         status: Status = "failed" if tool_input.get("status") == "failed" else "delivered"
+        schema = self.result_schema
+        if schema is not None and status == "delivered":
+            if "result" not in tool_input:
+                return ToolOutput("Not finished: `result` is required, matching the schema in this tool.", is_error=True)
+            if errors := validate_result(tool_input["result"], schema):
+                listed = "\n".join(f"- {e}" for e in errors)
+                return ToolOutput(f"Not finished: `result` does not match the schema:\n{listed}", is_error=True)
         outcome = await self._emit("before_done", summary=summary, status=status)
         if outcome.action == "block":
             return ToolOutput(
@@ -1121,6 +1154,8 @@ class Agent:
                 return checked
             summary = checked
         self._finish = (status, summary)
+        if schema is not None and status == "delivered":
+            self._result = (self.runtime.masker.mask_obj(tool_input["result"]),)
         self.ended_by_done = True
         return ToolOutput("Finished.")
 
@@ -1173,8 +1208,13 @@ class Agent:
                 changes = await self.runtime.workspace.changes(self.id)
             except Exception as error:
                 changes = f"(changes unknown: {error})"
-        self.journal.append("done", {"status": status, "summary": summary})
+        given = self._result if status == "delivered" else None
+        result = given[0] if given else None
+        record: dict[str, Any] = {"status": status, "summary": summary}
+        if given:
+            record["result"] = result
+        self.journal.append("done", record)
         await self._emit("end", status=status, summary=summary)
         self.runtime.output(self.id, "agent_end", f"{status}: {_short(summary)}")
-        self.result = AgentResult(self.id, status, summary, self.usage, self.steps, changes)
+        self.result = AgentResult(self.id, status, summary, self.usage, self.steps, changes, result)
         return self.result

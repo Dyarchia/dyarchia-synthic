@@ -172,6 +172,27 @@ tools = ["sh"]
 - Child agents are not verified; their parent judges their work. Each check is a `verify` record in the
   journal, so a resumed run keeps the rejections it had.
 
+## Structured delivery
+
+```toml
+[role.triage.result_schema]
+type = "object"
+required = ["severity", "files"]
+properties = { severity = { enum = ["low", "high"] }, files = { type = "array", items = { type = "string" } } }
+```
+
+- A role with `result_schema` must call `done` with a `result` that matches it; a mismatch is the error result of
+  `done`, listing each problem, and the agent fixes it. A `failed` delivery needs no result. The schema goes into
+  the `done` tool definition, so roles without one pay nothing. It is replaced as a whole across levels.
+- `synthic run --result-schema FILE.json` sets it for the root's role. The result is `AgentResult.result`, the
+  `result` field of the last `--json` line, a `result:` line of the text summary, in the `done` record of the
+  journal, and in the notice a parent gets from a child.
+- Checked keywords: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`,
+  `minItems`, `maxItems`, `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`,
+  `exclusiveMinimum`, `exclusiveMaximum`, `allOf`, `anyOf`, `oneOf`, `not`. Annotations (`title`, `description`,
+  `default`, `examples`, `format`, `$schema`, `$id`, `$comment`) are ignored; any other keyword (`$ref`...) is a
+  policy error.
+
 ## Docker sandbox
 
 ```toml

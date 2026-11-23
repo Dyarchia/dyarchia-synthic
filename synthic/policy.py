@@ -30,7 +30,8 @@ Merge rules (the contract with the human):
   not erase ``role.build.model``. ``fixed`` is a reserved key name in every table.
 * Lists (``role.<name>.tools``, ``can_spawn``, ``plugins.*``,
   ``instructions.files`` and every other list value) are replaced as a whole by
-  the lowest level that sets them, subject to ``fixed`` like any scalar.
+  the lowest level that sets them, subject to ``fixed`` like any scalar. So is
+  ``role.<name>.result_schema``, a table holding a JSON Schema.
 * ``models.<alias>.extra`` and ``role.<name>.extra`` are free-form tables of
   vendor fields the engine does not know (beta headers, service tier, context
   management...). They merge per key like any table, ``fixed`` included, and
@@ -80,6 +81,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from .schema import problems as schema_problems
 from .types import (
     EVENTS,
     AgentLimits,
@@ -183,6 +185,7 @@ _ROLE = {
     "max_output_tokens": "int",
     "instructions": "str",
     "extra": _Each("any"),
+    "result_schema": _Each("any"),
 }
 
 _HOOK = {"event": EVENTS, "command": "str", "match": "str", "timeout_seconds": "number"}
@@ -463,7 +466,10 @@ class _Merge:
                 continue
             here = (*path, key)
             owner = self.fixed_by(here)
-            if isinstance(value, dict) and (key in target or owner is None):
+            whole = len(here) == 3 and here[0] == "role" and here[2] == "result_schema"
+            """A result schema is replaced as a whole, as a list is: two levels' schemas merged key by key
+            would describe a value neither level asked for."""
+            if isinstance(value, dict) and not whole and (key in target or owner is None):
                 self._walk(target.setdefault(key, {}), value, here, level, pending)
                 continue
             if owner is not None:
@@ -598,7 +604,10 @@ def _build(
             max_output_tokens=spec.get("max_output_tokens"),
             instructions=spec.get("instructions"),
             extra=dict(spec.get("extra", {})),
+            result_schema=spec.get("result_schema"),
         )
+        if "result_schema" in spec:
+            problems.extend(schema_problems(spec["result_schema"], f"role.{name}.result_schema"))
     declared = set(tree.get("models", {}))
     for name, role in roles.items():
         if role.model not in declared:

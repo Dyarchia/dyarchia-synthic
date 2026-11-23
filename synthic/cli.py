@@ -39,7 +39,7 @@ from .journal import agents_in, ended, is_alive, list_runs, prune, read_records
 from .loop import AgentResult
 from .media import MediaError
 from .media import load as load_media
-from .policy import LoadedPolicy, PolicyError, load_policy
+from .policy import LoadedPolicy, PolicyError, deep_merge, load_policy
 from .tools.todo import render as render_todo
 from .tools.todo import tally as tally_todo
 from .types import Attachment, Provider, Record, Usage
@@ -106,10 +106,11 @@ def load(args: argparse.Namespace) -> tuple[Path, LoadedPolicy]:
     folder = Path(args.cwd or Path.cwd()).resolve()
     if not folder.is_dir():
         raise CliError(f"--cwd {folder} is not a folder")
+    overrides = deep_merge(parse_overrides(args.set), getattr(args, "schema_override", {}))
     loaded = load_policy(
         folder,
         Path(args.policy) if args.policy else None,
-        parse_overrides(args.set) or None,
+        overrides or None,
         args.trust_project,
         home=synthic_home(),
     )
@@ -294,6 +295,7 @@ class Printer:
                 "cost_usd": total.cost_usd,
                 "run_id": runtime.run_id,
                 "changes": result.changes,
+                "result": result.result,
                 "exit_code": code,
             }
             self.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -313,6 +315,8 @@ class Printer:
         ]
         if total.web_search_requests or total.web_fetch_requests:
             lines.insert(4, f"web: {total.web_search_requests} searches, {total.web_fetch_requests} fetches")
+        if result.result is not None:
+            lines.insert(2, "result: " + json.dumps(result.result, ensure_ascii=False))
         if result.changes:
             lines += ["changes:", result.changes]
         self.write("\n".join(lines) + "\n")
@@ -521,12 +525,24 @@ def printer_for(args: argparse.Namespace) -> Printer:
     return Printer("json" if args.json else "quiet" if args.quiet else "text")
 
 
+def result_schema_override(args: argparse.Namespace, role: str) -> None:
+    """``--result-schema FILE``: the JSON Schema becomes ``role.<role>.result_schema`` at the task level."""
+    try:
+        schema = json.loads(Path(args.result_schema).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CliError(f"cannot read the result schema: {error}") from None
+    args.schema_override = {"role": {role: {"result_schema": schema}}}
+
+
 def cmd_run(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     cwd, loaded = load(args)
     task, from_stdin = read_task(args)
     role = args.role or loaded.policy.initial_role
     if role not in loaded.policy.roles:
         raise CliError(f"role '{role}' is not defined")
+    if args.result_schema:
+        result_schema_override(args, role)
+        cwd, loaded = load(args)
     files = attachments(args.attach)
     require_key(factory)
     listen = should_listen(sys.stdin, from_stdin)
@@ -861,6 +877,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("task", nargs="?", help='the task, or "-" to read it from stdin')
     run.add_argument("--task-file", metavar="FILE", help="read the task from a file")
     run.add_argument("--role", help="the role of the root agent (default: initial_role)")
+    run.add_argument(
+        "--result-schema", metavar="FILE", help="a JSON Schema file: the delivery must carry a result matching it"
+    )
     resume = add(
         "resume", cmd_resume, "continue a crashed or stopped run, or an ended one when given a text", output, attach
     )

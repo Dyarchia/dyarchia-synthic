@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import itertools
+import json
 import math
 import re
 import time
@@ -175,6 +176,8 @@ class ChildHandle:
         assert self.result is not None
         result = self.result
         lines = [f"[child {self.id} ({self.role}) ended: {result.status}]", f"Summary: {result.summary}"]
+        if result.result is not None:
+            lines.append("Result: " + json.dumps(result.result, ensure_ascii=False))
         if len(self.attempts) > 1:
             lines.append("Attempts: " + "; ".join(self.attempts) + ".")
         if self.copy is not None:
@@ -408,7 +411,7 @@ class Runtime:
                 if record.kind == "model_call":
                     usage.add(Usage(**record.data["usage"]))
             steps = sum(1 for r in records if r.kind == "model_call" and "purpose" not in r.data)
-            return AgentResult(ROOT_ID, end.data["status"], end.data["summary"], usage, steps)
+            return AgentResult(ROOT_ID, end.data["status"], end.data["summary"], usage, steps, result=end.data.get("result"))
         numbers = [int(m.group(1)) for a in agents_in(self.run_dir) if (m := re.fullmatch(r"a(\d+)(?:\.\d+)?", a))]
         self._ids = itertools.count(max(numbers, default=0) + 1)
         reviewers = [a for a in agents_in(self.run_dir) if REVIEWER_ID.fullmatch(a)]
