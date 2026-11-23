@@ -52,10 +52,13 @@ from __future__ import annotations
 import asyncio
 import os
 import posixpath
+import io
 import secrets
 import stat
 import subprocess
+import tarfile
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +74,8 @@ LABEL = "synthic.run"
 LABEL_DIR = "synthic.run_dir"
 KEEPER_LOG = "docker.log"
 POLL_SECONDS = 0.2
+MAX_TREE_BYTES = 64 * 1024 * 1024
+"""The most a search reads from a folder that only exists inside the container."""
 
 _WRAPPER = f'[ -e "{KILL_MARKS}/${TOKEN_VAR}" ] && exit 137; exec "$@"'
 _SCAN = (
@@ -105,6 +110,66 @@ def write_atomic(target: Path, data: bytes) -> None:
         raise
 
 
+def _git_names(base: Path) -> list[str] | None:
+    """Files under ``base`` that git does not ignore (tracked and untracked), or ``None`` outside a work tree."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(base), "ls-files", "-z", "-co", "--exclude-standard"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if done.returncode != 0:
+        return None
+    return [name for name in done.stdout.decode("utf-8", "replace").split("\0") if name]
+
+
+def host_files(base: Path, max_bytes: int) -> Iterator[tuple[str, bytes | None]]:
+    """``(relative posix name, content)`` of every file under ``base`` (``""`` when ``base`` is a file), sorted.
+
+    Inside a git work tree only the files git does not ignore, else every file
+    but those under ``.git``. Content is ``None`` for a file over ``max_bytes``.
+    Lazy, so a caller that stops early reads no more.
+    """
+    if base.is_file():
+        yield "", _capped(base, max_bytes)
+        return
+    names = _git_names(base)
+    if names is None:
+        names = []
+        for folder, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            names += [(Path(folder) / f).relative_to(base).as_posix() for f in files]
+    for name in sorted(set(names)):
+        path = base / name
+        if path.is_file():
+            yield name, _capped(path, max_bytes)
+
+
+def _capped(path: Path, max_bytes: int) -> bytes | None:
+    try:
+        return None if path.stat().st_size > max_bytes else path.read_bytes()
+    except OSError:
+        return None
+
+
+def _tar_files(data: bytes, max_bytes: int) -> Iterator[tuple[str, bytes | None]]:
+    """The regular files of a tar stream, as ``host_files`` gives them; a stream cut short ends the listing."""
+    found: list[tuple[str, bytes | None]] = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as archive:
+            for member in archive:
+                if not member.isfile():
+                    continue
+                name = member.name.removeprefix("./")
+                source = archive.extractfile(member) if member.size <= max_bytes else None
+                found.append((name, source.read() if source is not None else None))
+    except (tarfile.TarError, OSError, EOFError):
+        pass
+    yield from sorted(found)
+
+
 class HostSandbox:
     """The host: paths resolve against the working folder, commands run through ``proc``."""
 
@@ -130,6 +195,11 @@ class HostSandbox:
 
     async def is_dir(self, location: Location) -> bool:
         return location.host is not None and location.host.is_dir()
+
+    async def files(self, location: Location, max_bytes: int) -> Iterator[tuple[str, bytes | None]]:
+        """The files under ``location`` (see ``host_files``); iterate it in a worker thread."""
+        assert location.host is not None
+        return host_files(location.host, max_bytes)
 
     async def start(
         self, command: str, cwd: Path, env: dict[str, str], output: Path, settings: EnvironmentSettings, token: str
@@ -279,6 +349,18 @@ class DockerSandbox:
         if location.host is not None:
             return location.host.is_dir()
         return (await self._exec('[ -d "$1" ]', location.shown))[0] == 0
+
+    async def files(self, location: Location, max_bytes: int) -> Iterator[tuple[str, bytes | None]]:
+        """Files under a mount come from the host side (``host_files``); others from a ``tar`` of the folder,
+        cut at ``MAX_TREE_BYTES``."""
+        if location.host is not None:
+            return host_files(location.host, max_bytes)
+        if not await self.is_dir(location):
+            return iter([("", await self.read(location))])
+        code, out, err = await self._exec(f'cd "$1" && tar -cf - . | head -c {MAX_TREE_BYTES}', location.shown)
+        if code != 0 and not out:
+            raise OSError(f"cannot list {location.shown} in the container: {err or f'exit code {code}'}")
+        return _tar_files(out, max_bytes)
 
     async def start(
         self, command: str, cwd: Path, env: dict[str, str], output: Path, settings: EnvironmentSettings, token: str

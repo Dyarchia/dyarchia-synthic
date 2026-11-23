@@ -371,8 +371,9 @@ class Agent:
             tools["job"] = builtin["job"]
         if "edit" in granted:
             tools["edit"] = builtin["edit"]
-        if "view" in granted:
-            tools["view"] = builtin["view"]
+        for name in ("view", "read", "grep"):
+            if name in granted:
+                tools[name] = builtin[name]
         if "todo" in granted:
             tools["todo"] = TodoTool(self._todo_changed)
         if "spawn" in granted and self.role.can_spawn and self.depth < self.policy.agents.depth:
@@ -1049,8 +1050,8 @@ class Agent:
         match call.name:
             case "sh":
                 return str(tool_input.get("command", ""))
-            case "edit" | "view":
-                raw = tool_input.get("path")
+            case "edit" | "view" | "read" | "grep":
+                raw = tool_input.get("path") or ("." if call.name == "grep" else None)
                 if not isinstance(raw, str) or not raw:
                     return ""
                 location = self.runtime.sandbox.locate(raw, self.cwd)
@@ -1059,7 +1060,7 @@ class Agent:
                 try:
                     return location.host.relative_to(self.cwd.resolve()).as_posix()
                 except ValueError:
-                    return location.host.as_posix()
+                    return location.shown if self.runtime.sandbox.kind == "docker" else location.host.as_posix()
             case "mcp":
                 return f"{tool_input.get('server', '')}/{tool_input.get('tool', '')}"
             case "spawn":

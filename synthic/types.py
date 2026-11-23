@@ -210,8 +210,10 @@ class Location:
 class Sandbox(Protocol):
     """Where an agent's commands run and its file tools read and write (``sandbox.py``).
 
-    File methods are synchronous (tools call them in a worker thread) and
-    raise ``OSError`` subclasses, ``FileNotFoundError`` for a missing file.
+    ``locate`` and ``shown`` only compute paths. File methods raise ``OSError``
+    subclasses, ``FileNotFoundError`` for a missing file. ``files`` returns a
+    lazy iterator of ``(name relative to the location, content)`` that the
+    caller walks in a worker thread; content is ``None`` above ``max_bytes``.
     """
 
     kind: str
@@ -220,13 +222,19 @@ class Sandbox(Protocol):
 
     def shown(self, path: Path) -> str: ...
 
-    def read(self, location: Location) -> bytes: ...
+    async def read(self, location: Location) -> bytes: ...
 
-    def write(self, location: Location, data: bytes) -> None: ...
+    async def write(self, location: Location, data: bytes) -> None: ...
 
-    def exists(self, location: Location) -> bool: ...
+    async def exists(self, location: Location) -> bool: ...
 
-    def is_dir(self, location: Location) -> bool: ...
+    async def is_dir(self, location: Location) -> bool: ...
+
+    async def files(self, location: Location, max_bytes: int) -> Iterator[tuple[str, bytes | None]]: ...
+
+    def warm(self) -> None: ...
+
+    async def close(self) -> None: ...
 
     async def start(
         self, command: str, cwd: Path, env: dict[str, str], output: Path, settings: EnvironmentSettings, token: str
@@ -500,7 +508,8 @@ class PermissionRule:
 
     ``tool`` is a tool name. ``pattern`` is a glob matched against the tool's
     target: the command line for ``sh``, the path relative to the working
-    folder (forward slashes) for ``edit`` and ``view``, ``server/tool`` for
+    folder (forward slashes) for ``edit``, ``view``, ``read`` and ``grep`` (a
+    path outside every mount of the Docker sandbox: its container path), ``server/tool`` for
     ``mcp``, the role for ``spawn``, a domain for ``web_search`` and
     ``web_fetch`` (applied when the request is built, see ``web.py``).
     """

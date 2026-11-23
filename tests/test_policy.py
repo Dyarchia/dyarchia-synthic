@@ -186,7 +186,7 @@ def test_network_allow_is_gone() -> None:
 
 def test_role_tools_must_be_known_tools() -> None:
     problems = problems_of(Level("task", {"role": {"build": {"tools": ["sh", "web"]}}}))
-    assert problems == ["role.build.tools names 'web', which is not one of sh, edit, view, todo, spawn, skill, mcp, web_search, web_fetch"]
+    assert problems == ["role.build.tools names 'web', which is not one of sh, edit, view, read, grep, todo, spawn, skill, mcp, web_search, web_fetch"]
 
 
 def test_compaction_template_must_be_readable(tmp_path: Path) -> None:

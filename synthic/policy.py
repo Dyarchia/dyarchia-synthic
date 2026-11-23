@@ -107,7 +107,7 @@ from .types import (
     WebSettings,
 )
 
-ROLE_TOOLS = ("sh", "edit", "view", "todo", "spawn", "skill", "mcp", "web_search", "web_fetch")
+ROLE_TOOLS = ("sh", "edit", "view", "read", "grep", "todo", "spawn", "skill", "mcp", "web_search", "web_fetch")
 """Every tool a role can grant. The engine tools (``done``, ``ask``, ``receipt``) need no grant; ``sh`` brings
 ``job`` and ``spawn`` brings ``agent``. ``web_search`` and ``web_fetch`` are server tools: the provider runs them."""
 

@@ -131,7 +131,7 @@ def test_builtin_tools_and_definitions(tmp_path: Path) -> None:
     async def scenario() -> None:
         jobs = JobManager(tmp_path / "jobs")
         tools = builtin_tools(SETTINGS, jobs)
-        assert set(tools) == {"sh", "edit", "job", "view"}
+        assert set(tools) == {"sh", "edit", "job", "view", "read", "grep"}
         for name, tool in tools.items():
             definition = to_definition(tool)
             assert definition["name"] == name

@@ -229,14 +229,18 @@ def test_real_run_with_a_scripted_model(tmp_path: Path) -> None:
         [
             reply(tool_use("sh", {"command": "uname -s > os.txt; ls /"})),
             reply(tool_use("view", {"path": "/etc/hostname"})),
+            reply(tool_use("grep", {"pattern": "^root:", "path": "/etc", "glob": "*passwd"})),
+            reply(tool_use("read", {"path": "os.txt"})),
             done(),
         ],
-        {**task, "role": {"lead": {"tools": ["sh", "edit", "view"]}}},
+        {**task, "role": {"lead": {"tools": ["sh", "edit", "view", "grep", "read"]}}},
     )
     assert result.status == "delivered"
     assert (project(tmp_path) / "os.txt").read_text(encoding="utf-8").strip() == "Linux"
     assert "workspace" in results(provider.requests[1])[0]["content"]
     assert "/etc/hostname: not an image" in results(provider.requests[2])[0]["content"]
+    assert results(provider.requests[3])[0]["content"].startswith("/etc/passwd:1: root:")
+    assert results(provider.requests[4])[0]["content"] == "os.txt, lines 1-1 of 1:\n1: Linux"
     assert not _exists(f"synthic-{runtime.run_id}")
 
 

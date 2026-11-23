@@ -286,6 +286,8 @@ sh       run a shell command; a long one moves to the background
 job      follow, wait for or kill a background command
 edit     replace exact text in a file, or create a file
 view     look at an image or a PDF
+read     a text file or a line range, with line numbers
+grep     search files with a regular expression: path:line: text
 todo     keep a short task list (pending, active, done, dropped)
 web_search, web_fetch   server tools, run by the provider (see Web search and web fetch)
 spawn    start a child agent on a task
@@ -297,7 +299,11 @@ skill    load a skill, when plugins provide any
 mcp      call a tool of a configured MCP server
 ```
 
-`view` and `todo` are granted like `sh` and `edit`, in `role.<name>.tools`; no default role has them. `todo`
+`view`, `read`, `grep` and `todo` are granted like `sh` and `edit`, in `role.<name>.tools`; no default role has
+them. `read` and `grep` give exact output with no shell noise, through the same output cap and receipts as any
+tool, and inside the container in docker mode. `grep` takes `pattern` (Python `re`), `path`, `glob`, `ignore_case`
+and `limit` (100 matches by default, at most 1000); inside a git work tree it searches only files git does not
+ignore, and it skips binary files, files over 2 MB and lines past 300 characters. `todo`
 takes `set` (the whole list), `update` (steps by number) and `add`. Its result holds only the counts and the
 active step, and nothing reminds the agent of the list, so it costs only the calls themselves. Each change is a
 `todo` record in the journal, printed live by `synthic run` and at the end of `synthic show`; a resumed agent
