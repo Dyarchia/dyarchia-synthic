@@ -218,7 +218,7 @@ class Verifier:
             lines += ["", "These checks already passed: " + "; ".join(f"`{c}`" for c in self.settings.commands)]
         lines += [
             "",
-            f"The work is in {agent.cwd}. {where}",
+            f"The work is in {agent.runtime.sandbox.shown(agent.cwd)}. {where}",
             "",
             "Answer by calling `done`: status `delivered` when everything asked is done and correct; status "
             "`failed` when anything is missing or wrong, with the summary listing each problem on a line of its own.",

@@ -192,6 +192,47 @@ class Attachment:
     note: str
 
 
+@dataclass(frozen=True)
+class Location:
+    """A path as a tool asked for it, resolved by a ``Sandbox``.
+
+    ``shown`` is how the agent sees it. ``host`` is the host file that holds
+    the same bytes, or ``None`` when only the sandbox can reach it (then
+    ``inner`` is its path there). ``readonly`` marks a read-only mount.
+    """
+
+    shown: str
+    host: Path | None
+    inner: str | None = None
+    readonly: bool = False
+
+
+class Sandbox(Protocol):
+    """Where an agent's commands run and its file tools read and write (``sandbox.py``).
+
+    File methods are synchronous (tools call them in a worker thread) and
+    raise ``OSError`` subclasses, ``FileNotFoundError`` for a missing file.
+    """
+
+    kind: str
+
+    def locate(self, raw: str, cwd: Path) -> Location: ...
+
+    def shown(self, path: Path) -> str: ...
+
+    def read(self, location: Location) -> bytes: ...
+
+    def write(self, location: Location, data: bytes) -> None: ...
+
+    def exists(self, location: Location) -> bool: ...
+
+    def is_dir(self, location: Location) -> bool: ...
+
+    async def start(
+        self, command: str, cwd: Path, env: dict[str, str], output: Path, settings: EnvironmentSettings, token: str
+    ) -> Any: ...
+
+
 @dataclass
 class ToolContext:
     """What the loop hands to a tool on every call.
@@ -200,6 +241,7 @@ class ToolContext:
     tool that started processes must kill all of them when it fires.
     ``timeout_seconds`` is the foreground limit from the policy: a tool that can
     keep working past it must move the work to the background and return.
+    ``sandbox`` is where files live and commands run; ``None`` is the host.
     """
 
     agent_id: str
@@ -207,6 +249,7 @@ class ToolContext:
     env: dict[str, str]
     timeout_seconds: float
     cancel: asyncio.Event
+    sandbox: Sandbox | None = None
 
 
 class Tool(Protocol):
@@ -328,13 +371,38 @@ class MemorySettings:
 
 
 @dataclass(frozen=True)
-class EnvironmentSettings:
-    """``mode`` is ``"in_place"`` (the folder as it is) or ``"copy"`` (a separate work copy per agent)."""
+class DockerSettings:
+    """The container of ``environment.mode = "docker"`` (see ``sandbox.py``).
 
-    mode: Literal["in_place", "copy"] = "in_place"
+    ``command`` is the Docker client's argv prefix. ``image`` must have ``sh``.
+    The project root is mounted read-write at ``workdir``; ``mounts`` maps more
+    container paths to host folders, mounted read-only. ``pass_env`` names host
+    variables copied into the container, next to ``environment.env``. ``user``
+    is passed as ``--user`` (empty: the host's uid and gid on POSIX, the image's
+    user on Windows). ``options`` are extra ``docker run`` arguments.
+    """
+
+    command: tuple[str, ...] = ("docker",)
+    image: str = ""
+    workdir: str = "/workspace"
+    shell: tuple[str, ...] = ("sh", "-c")
+    mounts: dict[str, str] = field(default_factory=dict)
+    pass_env: tuple[str, ...] = ()
+    network: bool = True
+    user: str = ""
+    options: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EnvironmentSettings:
+    """``mode`` is ``"in_place"`` (the folder as it is), ``"copy"`` (a separate work copy per agent) or
+    ``"docker"`` (the folder as it is, seen from inside one container per run)."""
+
+    mode: Literal["in_place", "copy", "docker"] = "in_place"
     shell: tuple[str, ...] = ()
     tool_timeout_seconds: float = 120.0
     env: dict[str, str] = field(default_factory=dict)
+    docker: DockerSettings = DockerSettings()
 
 
 @dataclass(frozen=True)

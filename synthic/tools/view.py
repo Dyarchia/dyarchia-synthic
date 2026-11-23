@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ..media import MediaError, load
+from ..media import MediaError, from_bytes
+from ..sandbox import of
 from ..types import DocumentData, ImageData, ToolContext, ToolOutput
-from .edit import resolve
 
 
 class ViewTool:
@@ -39,9 +39,14 @@ class ViewTool:
         path = tool_input.get("path")
         if not isinstance(path, str) or not path:
             return ToolOutput("`path` must be a non-empty string.", is_error=True)
-        target = resolve(path, ctx.cwd)
+        sandbox = of(ctx.sandbox)
+        location = sandbox.locate(path, ctx.cwd)
         try:
-            attachment = await asyncio.to_thread(load, target)
+            data = await sandbox.read(location)
+        except OSError as error:
+            return ToolOutput(f"{location.shown}: cannot be read: {error.strerror or error}", is_error=True)
+        try:
+            attachment = await asyncio.to_thread(from_bytes, data, location.shown)
         except MediaError as error:
             return ToolOutput(str(error), is_error=True)
         source = attachment.block["source"]

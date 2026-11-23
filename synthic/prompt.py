@@ -14,13 +14,15 @@ import platform
 from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .plugins import Plugins
 from .proc import describe_shell
 from .types import Policy, Role
 
 
-def _preamble(policy: Policy, cwd: Path, tools: Collection[str]) -> str:
+def _preamble(policy: Policy, cwd: Path, tools: Collection[str], sandbox: Any) -> str:
+    docker = sandbox is not None and sandbox.kind == "docker"
     lines = [
         "You are an autonomous agent working through tools. Nobody is watching: do not wait for confirmation. "
         "Use `ask` only for decisions that are truly the human's; state your assumption and keep working. "
@@ -31,11 +33,26 @@ def _preamble(policy: Policy, cwd: Path, tools: Collection[str]) -> str:
     ]
     if "sh" in tools:
         lines.append("A command that outlives the time limit keeps running as a background job (see `job`).")
-        lines.append(describe_shell(policy.environment) + ".")
+        if docker:
+            docker_settings = policy.environment.docker
+            lines.append(
+                f"Commands run inside a Docker container (image {docker_settings.image}) as: "
+                f"{' '.join(docker_settings.shell)} <command>."
+            )
+        else:
+            lines.append(describe_shell(policy.environment) + ".")
     if "spawn" in tools:
         lines.append("Child agents run in parallel; when you have nothing to do until one ends, call `agent` wait.")
-    lines.append(f"Platform: {platform.system()} {platform.release()}.")
-    lines.append(f"Working folder: {cwd}")
+    if docker:
+        lines.append(
+            "Platform: Linux, in a Docker container. Of the host only the working folder (and the memory folder, "
+            "read-only extra folders, if any) can be seen; every path you use is a path in the container."
+        )
+        if read_only := sorted(policy.environment.docker.mounts):
+            lines.append("Read-only folders: " + ", ".join(read_only) + ".")
+    else:
+        lines.append(f"Platform: {platform.system()} {platform.release()}.")
+    lines.append(f"Working folder: {sandbox.shown(cwd) if docker else cwd}")
     if "sh" in tools:
         lines.append("Every command already starts in the working folder, and relative paths resolve against it.")
     return "\n".join(lines)
@@ -83,7 +100,7 @@ def memory_dir(policy: Policy, base: Path) -> Path:
     return Path(policy.memory.dir).expanduser() / f"{root.name}-{digest}"
 
 
-def _memory(policy: Policy, base: Path, tools: Collection[str], root: bool) -> str:
+def _memory(policy: Policy, base: Path, tools: Collection[str], root: bool, sandbox: Any = None) -> str:
     """The notes kept by earlier runs, and who keeps them now. Empty when there is nothing to say.
 
     Read once, when the agent starts: the text is then fixed for the run, as
@@ -101,7 +118,7 @@ def _memory(policy: Policy, base: Path, tools: Collection[str], root: bool) -> s
     writes = root and "edit" in tools
     if not notes and not writes:
         return ""
-    lines = [f"Memory folder: {folder}"]
+    lines = [f"Memory folder: {sandbox.shown(folder) if sandbox is not None else folder}"]
     if notes:
         limit = policy.memory.max_chars
         if len(notes) > limit:
@@ -185,6 +202,7 @@ def build_system(
     base: Path | None = None,
     root: bool = True,
     now: datetime | None = None,
+    sandbox: Any = None,
 ) -> list[str]:
     """System texts for one agent, most stable first; each becomes one system block.
 
@@ -193,13 +211,14 @@ def build_system(
     (the project root; ``cwd`` when not given). ``root`` is false for a
     spawned agent. ``now`` is the moment the agent starts (the local time
     when not given). Only its date is written, so every agent started on the
-    same day gets the same bytes, and it is never updated.
+    same day gets the same bytes, and it is never updated. ``sandbox`` tells
+    how paths and commands look from where the agent works (the host when not given).
     """
-    texts = [_preamble(policy, cwd, tools)]
+    texts = [_preamble(policy, cwd, tools, sandbox)]
     if role.instructions:
         texts.append(role.instructions)
     texts.extend(_instruction_files(policy, cwd, base or cwd))
-    if memory := _memory(policy, base or cwd, tools, root):
+    if memory := _memory(policy, base or cwd, tools, root, sandbox):
         texts.append(memory)
     if plugins is not None and ({"skill", "mcp"} & set(tools)) and (index := plugins.index_text()):
         texts.append(index)

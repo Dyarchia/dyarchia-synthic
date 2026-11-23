@@ -86,6 +86,7 @@ from .types import (
     Budget,
     ContextSettings,
     Decision,
+    DockerSettings,
     EnvironmentSettings,
     Escalation,
     HookSpec,
@@ -223,10 +224,21 @@ _SCHEMA: dict[str, Any] = {
     "memory": {"enabled": "bool", "dir": "str", "max_chars": "int"},
     "journal": {"dir": "str", "retention_days": "int", "mask": "regexes"},
     "environment": {
-        "mode": ("in_place", "copy"),
+        "mode": ("in_place", "copy", "docker"),
         "shell": "strings",
         "tool_timeout_seconds": "number",
         "env": _Each("str"),
+        "docker": {
+            "command": "strings",
+            "image": "str",
+            "workdir": "str",
+            "shell": "strings",
+            "mounts": _Each("str"),
+            "pass_env": "strings",
+            "network": "bool",
+            "user": "str",
+            "options": "strings",
+        },
     },
     "provider": {"retry_seconds": "number", "timeout_seconds": "number"},
     "instructions": {"files": "strings", "repo_files": "strings", "load_repo_files": "bool"},
@@ -622,6 +634,7 @@ def _build(
         problems.append(f"verify.review '{reviewer}' is not a defined role")
     if verify.get("rounds", 0) < 0:
         problems.append("verify.rounds must not be negative")
+    problems.extend(_docker_problems(tree.get("environment", {})))
     provider = tree.get("provider", {})
     if provider.get("retry_seconds", 0.0) < 0:
         problems.append("provider.retry_seconds must not be negative")
@@ -635,6 +648,9 @@ def _build(
 
     environment = section("environment")
     environment["env"] = dict(tree.get("environment", {}).get("env", {}))
+    docker = {k: tuple(v) if isinstance(v, list) else v for k, v in environment.get("docker", {}).items()}
+    docker["mounts"] = dict(docker.get("mounts", {}))
+    environment["docker"] = DockerSettings(**docker)
     plugins = section("plugins")
     plugins["mcp"] = tuple(mcp)
     return Policy(
@@ -659,6 +675,29 @@ def _build(
         never_send=never_send,
         visible_to_agent=tree.get("visible_to_agent", True),
     )
+
+
+def _docker_problems(environment: dict[str, Any]) -> list[str]:
+    """What makes ``environment.mode = "docker"`` unusable; nothing is checked in the other modes."""
+    if environment.get("mode") != "docker":
+        return []
+    docker = environment.get("docker", {})
+    found = []
+    if not docker.get("image"):
+        found.append('environment.docker.image must name an image when environment.mode = "docker"')
+    if not docker.get("command"):
+        found.append("environment.docker.command must not be empty")
+    if not docker.get("shell"):
+        found.append("environment.docker.shell must not be empty")
+    for path in [docker.get("workdir", "/workspace"), *docker.get("mounts", {})]:
+        if not path.startswith("/"):
+            found.append(f"environment.docker: the container path {path!r} must be absolute")
+    secret = "ANTHROPIC_API_KEY"
+    if any(name.upper() == secret for name in docker.get("pass_env", [])):
+        found.append(f"environment.docker.pass_env must not name {secret}: the container never gets the engine's key")
+    if any(name.upper() == secret for name in environment.get("env", {})):
+        found.append(f'environment.env must not set {secret} when environment.mode = "docker"')
+    return found
 
 
 def _fallback_loops(models: dict[str, ModelSpec]) -> list[str]:

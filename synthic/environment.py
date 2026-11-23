@@ -120,7 +120,7 @@ class Workspace:
         return f"synthic/{self.run_id}/{agent_id}" if self.run_id else f"synthic/{agent_id}"
 
     async def start(self, agent_id: str) -> Path:
-        if self.settings.mode == "in_place":
+        if self.settings.mode != "copy":
             return self.root
         dest = self.state_dir / "work" / agent_id
         if dest.exists():
@@ -146,7 +146,7 @@ class Workspace:
 
     async def changes(self, agent_id: str) -> str:
         """What the agent did: for a git copy the commits since it started, then the uncommitted status."""
-        if self.settings.mode == "in_place":
+        if self.settings.mode != "copy":
             return await self._status(self.root)
         entry = await self._entry(agent_id)
         if entry is None:
@@ -169,7 +169,7 @@ class Workspace:
 
     async def close(self, agent_id: str, keep: bool = False) -> None:
         """Remove the copy. Uncommitted work goes with it (ask ``has_changes`` first); commits stay on their branch."""
-        if self.settings.mode == "in_place" or keep:
+        if self.settings.mode != "copy" or keep:
             return
         entry = await self._entry(agent_id)
         self._copies.pop(agent_id, None)

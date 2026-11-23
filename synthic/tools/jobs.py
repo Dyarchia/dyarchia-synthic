@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .. import proc
-from ..types import EnvironmentSettings, ToolContext, ToolOutput
+from ..sandbox import job_token, of
+from ..types import EnvironmentSettings, Sandbox, ToolContext, ToolOutput
 
 JobState = Literal["running", "exited", "killed"]
 WaitOutcome = Literal["done", "timeout", "cancel"]
@@ -132,13 +133,17 @@ class JobManager:
     """Owns every process tree the agent started.
 
     ``output_dir`` holds one output file per job; when it is not given, a
-    temporary folder is created and ``close`` removes it.
+    temporary folder is created and ``close`` removes it. ``sandbox`` is where
+    the commands run (the host by default); each command gets a token of its
+    own, which the Docker sandbox uses to find everything it started.
     """
 
-    def __init__(self, output_dir: Path | None = None) -> None:
+    def __init__(self, output_dir: Path | None = None, sandbox: Sandbox | None = None) -> None:
         self._own_dir = output_dir is None
         self.output_dir = Path(tempfile.mkdtemp(prefix="synthic-jobs-")) if output_dir is None else output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.sandbox = of(sandbox)
+        self._token = job_token()
         self._jobs: dict[str, Job] = {}
         self._finished: list[Job] = []
         self._watchers: set[asyncio.Task[None]] = set()
@@ -152,11 +157,11 @@ class JobManager:
         settings: EnvironmentSettings,
         background: bool = False,
     ) -> Job:
-        """Start ``command`` in ``cwd`` with ``os.environ`` overlaid by ``env``."""
+        """Start ``command`` in ``cwd``; on the host with ``os.environ`` overlaid by ``env``."""
         self._settle()
         job_id = f"j{next(self._ids)}"
         output = self.output_dir / f"{job_id}.log"
-        tree = await proc.start(command, cwd, proc.merged_env(env), output, settings)
+        tree = await self.sandbox.start(command, cwd, env, output, settings, f"{self._token}-{job_id}")
         job = Job(job_id, command, time.time(), output, tree, background=background)
         self._jobs[job_id] = job
         watcher = asyncio.create_task(self._watch(job))
@@ -172,10 +177,14 @@ class JobManager:
             job.state = "exited"
             if job.background:
                 self._finished.append(job)
+        job.done.set()
+        """``done`` is set before the refresh, which in a container is one more ``docker exec``: the
+        command's result must not wait for the check of what it left behind. On the host the
+        refresh never suspends, so nothing can run in between."""
+        await job.tree.refresh()
         if not job.settled and not job.tree.alive():
             job.tree.release()
             job.settled = True
-        job.done.set()
 
     def _settle(self) -> None:
         """Forget trees whose shell exited and that left nothing running.

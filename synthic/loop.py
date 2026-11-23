@@ -64,7 +64,6 @@ from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
 from .prompt import build_system
 from .tools import builtin_tools, to_definition
-from .tools.edit import resolve
 from .tools.jobs import JobManager
 from .types import (
     Attachment,
@@ -254,7 +253,7 @@ class Agent:
         self.own_copy = own_copy
         self.journal = journal or FileJournal(runtime.run_dir, agent_id, runtime.masker)
         self.receipts = ReceiptStore(self.journal.dir / "receipts")
-        self.jobs = JobManager()
+        self.jobs = JobManager(sandbox=runtime.sandbox)
         self.children: dict[str, ChildHandle] = {}
         self.tools = self._build_tools()
         masker = runtime.masker
@@ -265,7 +264,14 @@ class Agent:
             tool_defs = masker.mask_obj([*web.definitions(self.policy, role.tools), *client])
         if system is None:
             texts = build_system(
-                self.policy, role, self.cwd, self.tools, runtime.plugins, runtime.root, parent_id is None
+                self.policy,
+                role,
+                self.cwd,
+                self.tools,
+                runtime.plugins,
+                runtime.root,
+                parent_id is None,
+                sandbox=runtime.sandbox,
             )
             system = [masker.mask(text) for text in texts]
         self.tool_defs: list[Block] = tool_defs
@@ -896,11 +902,13 @@ class Agent:
                 raw = tool_input.get("path")
                 if not isinstance(raw, str) or not raw:
                     return ""
-                path = resolve(raw, self.cwd)
+                location = self.runtime.sandbox.locate(raw, self.cwd)
+                if location.host is None:
+                    return location.shown
                 try:
-                    return path.relative_to(self.cwd.resolve()).as_posix()
+                    return location.host.relative_to(self.cwd.resolve()).as_posix()
                 except ValueError:
-                    return path.as_posix()
+                    return location.host.as_posix()
             case "mcp":
                 return f"{tool_input.get('server', '')}/{tool_input.get('tool', '')}"
             case "spawn":
@@ -912,7 +920,9 @@ class Agent:
         if dirs := self.runtime.plugins.path_dirs:
             current = env.get("PATH") or os.environ.get("PATH", "")
             env["PATH"] = os.pathsep.join([*(str(d) for d in dirs), current])
-        return ToolContext(self.id, self.cwd, env, self.policy.environment.tool_timeout_seconds, self._cancel)
+        return ToolContext(
+            self.id, self.cwd, env, self.policy.environment.tool_timeout_seconds, self._cancel, self.runtime.sandbox
+        )
 
     async def _run_calls(self, blocks: list[Block]) -> None:
         """Admit each call in order, run the admitted ones (same resource in order, the rest at once), record all."""

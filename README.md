@@ -78,7 +78,7 @@ retried) and `timeout_seconds` (how long a stream may stay silent). `[models.<al
 `agents.repeat_limit` bounds identical repeated tool calls. `never_send` and `journal.mask` hold regular
 expressions (Python `re` syntax), not globs, and a pattern that does not compile is a policy error.
 With `environment.mode = "copy"`, each child works in a copy, on the git branch
-`synthic/<run_id>/<agent_id>`.
+`synthic/<run_id>/<agent_id>`. With `"docker"`, everything runs in a container (see Docker sandbox).
 
 ## Context and memory
 
@@ -172,6 +172,37 @@ tools = ["sh"]
 - Child agents are not verified; their parent judges their work. Each check is a `verify` record in the
   journal, so a resumed run keeps the rejections it had.
 
+## Docker sandbox
+
+```toml
+[environment]
+mode = "docker"
+env = { CI = "1" }
+
+[environment.docker]
+image = "python:3.12-slim"
+network = false
+pass_env = ["SF_ACCESS_TOKEN"]
+mounts = { "/ref" = "C:/data/reference" }
+```
+
+- One container per run, shared by every agent of the run (they all work in the project folder, as with
+  `in_place`). `sh`, background jobs, `[verify]` commands and the file access of `edit` and `view` happen inside
+  it. Hooks, MCP servers and plugins still run on the host.
+- Mounts: the project read-write at `workdir` (`/workspace`), the memory folder at `/synthic/memory` when memory
+  is on, and each of `mounts` read-only. Nothing else of the host is visible. The image needs `sh`.
+- Environment: only `environment.env` and the host variables named in `pass_env`, given as `-e NAME` so no value
+  is on a command line. `ANTHROPIC_API_KEY` is refused in this mode.
+- Network: `network = true` (default) or `false` (`--network none`). There is no list of allowed domains: Docker
+  cannot filter by domain without a proxy, which Synthic does not ship.
+- Lifetime: started in the background when the run starts, removed with `docker rm -f` when it ends. If the
+  engine dies, the container's main process sees its stdin close and `--rm` removes it; containers of runs that
+  are no longer alive (label `synthic.run`) are also removed when a new docker-mode run starts.
+- Every command carries `SYNTHIC_JOB=<token>`; a kill removes every process in the container that holds it,
+  detached ones included. Output a leftover process writes more than about 2 s after its shell exited is lost.
+- `user` sets `--user` (default: the host uid:gid on Linux and macOS), `options` adds `docker run` arguments,
+  `shell` is the shell inside (`["sh", "-c"]`), and `command` the client (`["docker"]`).
+
 ## Interrupting a run
 
 From the same terminal (when stdin is a terminal), type a line while the run goes:
@@ -243,4 +274,5 @@ py -m pip install pytest
 py -m pytest -q
 ```
 
-The tests run offline against a scripted model.
+The tests run offline against a scripted model and a fake Docker client. A few tests use a real Docker daemon
+and are skipped unless one answers and `alpine:3.20` is already pulled.

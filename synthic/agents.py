@@ -1,7 +1,8 @@
 """Job 8: the agent tree, and the runtime that owns everything a run shares.
 
 One ``Runtime`` per run. It holds the policy, the provider, the run folder, the
-masker, the hooks, the work copies, the plugins, the budget ledger, the open
+masker, the hooks, the work copies, the sandbox (the host, or the run's Docker
+container, removed in ``close``), the plugins, the budget ledger, the open
 questions and every agent. Agents reach it through ``agent.runtime``.
 
 Counting: the root has depth 0 and a child one more than its parent; a spawn
@@ -53,6 +54,7 @@ from .loop import ENGINE_TOOLS, Agent, AgentResult, Question
 from .plugins import load_plugins
 from .policy import LoadedPolicy, PolicyError, spawn_role
 from .provider import AnthropicProvider
+from .sandbox import make_sandbox
 from .verify import REVIEWER_ID
 from .types import Attachment, Budget, Provider, Role, ToolContext, ToolOutput, Usage
 
@@ -318,6 +320,7 @@ class Runtime:
         self.plugin_tools = self.plugins.tools()
         self.hooks = Hooks((*policy.hooks, *self.plugins.hooks), self.root, policy.environment.env)
         self.workspace = Workspace(policy.environment, self.root, self.run_dir, self.run_id)
+        self.sandbox = make_sandbox(policy, self.root, self.run_dir, self.run_id)
         self._own_provider = provider is None
         self.provider: Provider = provider or AnthropicProvider(
             cache_ttl=policy.context.cache_ttl,
@@ -369,6 +372,7 @@ class Runtime:
         assert self.root_agent is not None
         if self._heartbeat is None:
             self._heartbeat = asyncio.get_running_loop().create_task(self._beat())
+        self.sandbox.warm()
         try:
             return await self.root_agent.run()
         finally:
@@ -640,6 +644,7 @@ class Runtime:
                 keep = agent.result is None or bool(agent.result.changes)
                 await self.workspace.close(agent_id, keep=keep)
             agent.journal.close()
+        await self.sandbox.close()
         if self._own_provider and isinstance(self.provider, AnthropicProvider):
             await self.provider.aclose()
         if self._heartbeat is not None:

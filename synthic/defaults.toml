@@ -105,6 +105,16 @@ mode = "in_place"
 shell = []
 tool_timeout_seconds = 120
 
+[environment.docker]
+command = ["docker"]
+image = ""
+workdir = "/workspace"
+shell = ["sh", "-c"]
+pass_env = []
+network = true
+user = ""
+options = []
+
 [provider]
 retry_seconds = 3600
 timeout_seconds = 600

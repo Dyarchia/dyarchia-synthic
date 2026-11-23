@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import difflib
 import os
-import stat
-import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..sandbox import of, write_atomic
 from ..types import ToolContext, ToolOutput
 
 BOM = b"\xef\xbb\xbf"
@@ -18,10 +17,6 @@ CONTEXT_LINES = 2
 
 class EditError(Exception):
     """A call the model has to fix; the message tells it how."""
-
-
-def resolve(path: str, cwd: Path) -> Path:
-    return (cwd / Path(path).expanduser()).resolve()
 
 
 def _closest_line(text: str, old: str) -> str:
@@ -50,17 +45,25 @@ def _excerpt(text: str, start: int, length: int) -> str:
 
 def apply_edit(target: Path, old: str, new: str, replace_all: bool) -> str:
     """Perform one edit on disk and return the success message, or raise ``EditError``."""
-    if not target.exists():
+    raw = target.read_bytes() if target.exists() else None
+    data, message = edit_bytes(raw, old, new, replace_all, str(target))
+    write_atomic(target, data)
+    return message
+
+
+def edit_bytes(raw: bytes | None, old: str, new: str, replace_all: bool, target: str) -> tuple[bytes, str]:
+    """The new content of a file whose content is ``raw`` (``None``: it does not exist) and the success message.
+
+    Raises ``EditError``. ``target`` is the path as the agent sees it, for the messages.
+    """
+    if raw is None:
         if old:
             raise EditError(f"{target} does not exist. To create it, call with an empty `old`.")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(target, new.encode("utf-8"))
-        return f"Created {target}."
+        return new.encode("utf-8"), f"Created {target}."
     if not old:
         raise EditError(f"{target} already exists. Give the exact text to replace in `old`.")
     if old == new:
         raise EditError("`old` and `new` are identical; nothing to change.")
-    raw = target.read_bytes()
     bom = raw.startswith(BOM)
     try:
         text = raw[len(BOM) if bom else 0 :].decode("utf-8")
@@ -84,12 +87,12 @@ def apply_edit(target: Path, old: str, new: str, replace_all: bool) -> str:
         result += eol
     elif not text.endswith(eol) and result.endswith(eol):
         result = result[: -len(eol)]
-    _write_atomic(target, (BOM if bom else b"") + result.encode("utf-8"))
     shown = result.replace("\r\n", "\n")
     offset = len(result[:start].replace("\r\n", "\n"))
     first = " (first shown)" if count > 1 else ""
     header = f"{target}: {count} replacement{'s' if count > 1 else ''}{first}"
-    return f"{header}\n{_excerpt(shown, offset, len(new.replace('\r\n', '\n')))}"
+    message = f"{header}\n{_excerpt(shown, offset, len(new.replace('\r\n', '\n')))}"
+    return (BOM if bom else b"") + result.encode("utf-8"), message
 
 
 def _positions(text: str, needle: str) -> list[int]:
@@ -98,21 +101,6 @@ def _positions(text: str, needle: str) -> list[int]:
         found.append(index)
         index = text.find(needle, index + len(needle))
     return found
-
-
-def _write_atomic(target: Path, data: bytes) -> None:
-    """Write through a temp file in the same folder and swap it in, keeping the old file's mode."""
-    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
-    handle, temp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(handle, "wb") as sink:
-            sink.write(data)
-        if mode is not None:
-            os.chmod(temp, mode)
-        os.replace(temp, target)
-    except BaseException:
-        Path(temp).unlink(missing_ok=True)
-        raise
 
 
 class EditTool:
@@ -140,15 +128,24 @@ class EditTool:
         path = tool_input.get("path")
         if not isinstance(path, str) or not path:
             return None
-        return os.path.normcase(str(resolve(path, ctx.cwd)))
+        location = of(ctx.sandbox).locate(path, ctx.cwd)
+        return os.path.normcase(str(location.host)) if location.host is not None else location.shown
 
     async def run(self, tool_input: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         path, old, new = (tool_input.get(key) for key in ("path", "old", "new"))
         if not (isinstance(path, str) and path and isinstance(old, str) and isinstance(new, str)):
             return ToolOutput("`path` (non-empty), `old` and `new` must be strings.", is_error=True)
-        target = resolve(path, ctx.cwd)
+        sandbox = of(ctx.sandbox)
+        location = sandbox.locate(path, ctx.cwd)
         try:
-            message = await asyncio.to_thread(apply_edit, target, old, new, tool_input.get("replace_all") is True)
+            try:
+                raw: bytes | None = await sandbox.read(location)
+            except FileNotFoundError:
+                raw = None
+            data, message = await asyncio.to_thread(
+                edit_bytes, raw, old, new, tool_input.get("replace_all") is True, location.shown
+            )
+            await sandbox.write(location, data)
         except (EditError, OSError) as error:
             return ToolOutput(str(error), is_error=True)
         return ToolOutput(message)

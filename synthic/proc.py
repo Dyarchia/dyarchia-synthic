@@ -311,6 +311,9 @@ class ProcessTree:
             _kernel32.CloseHandle(self._job)
             self._job = None
 
+    async def refresh(self) -> None:
+        """Bring ``alive`` up to date once the shell has exited; the host answers ``alive`` directly."""
+
 
 async def start(
     command: str,
@@ -320,14 +323,24 @@ async def start(
     settings: EnvironmentSettings,
 ) -> ProcessTree:
     """Run ``command`` through the shell in ``cwd`` with exactly ``env``, writing all output to ``output``."""
-    argv = [*shell_argv(settings), command]
+    return await start_argv([*shell_argv(settings), command], cwd, env, output)
+
+
+async def start_argv(
+    argv: list[str],
+    cwd: Path,
+    env: Mapping[str, str],
+    output: Path,
+    stdin: int = subprocess.DEVNULL,
+) -> ProcessTree:
+    """Run ``argv`` without a shell, as ``start`` does; ``stdin=subprocess.PIPE`` keeps a pipe open to it."""
     with open(output, "wb") as sink:
         if IS_WINDOWS:
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=cwd,
                 env=dict(env),
-                stdin=subprocess.DEVNULL,
+                stdin=stdin,
                 stdout=sink,
                 stderr=subprocess.STDOUT,
                 creationflags=_CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW,
@@ -343,7 +356,7 @@ async def start(
             *argv,
             cwd=cwd,
             env=dict(env),
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
             stdout=sink,
             stderr=subprocess.STDOUT,
             start_new_session=True,
