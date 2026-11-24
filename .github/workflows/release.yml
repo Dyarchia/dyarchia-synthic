@@ -16,11 +16,11 @@ jobs:
             - name: Tag matches the package version
               run: |
                   $version = python -c "import synthic; print(synthic.__version__)"
-                  if ("v$version" -ne $env:GITHUB_REF_synthic) { throw "Tag $env:GITHUB_REF_synthic, package $version" }
+                  if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME, package $version" }
             - run: python -m pytest -q
             - run: ./packaging/build.ps1
             - run: python -m build --wheel --outdir build/release
             - name: Publish the release
-              run: gh release create $env:GITHUB_REF_synthic (Get-ChildItem build/release -File).FullName --generate-notes --verify-tag
+              run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem build/release -File).FullName --generate-notes --verify-tag
               env:
                   GH_TOKEN: ${{ github.token }}
