@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = "Dyarchia/synthic"
 $name = "synthic"
 $target = Join-Path $env:LOCALAPPDATA "Programs\$name"
@@ -8,8 +10,10 @@ if (-not $asset) { throw "Release $($release.tag_name) has no Windows build" }
 $sum = $release.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
 if (-not $sum) { throw "Release $($release.tag_name) has no checksum for $($asset.name)" }
 $zip = Join-Path $env:TEMP $asset.name
-Invoke-WebRequest $asset.browser_download_url -OutFile $zip
-$expected = ((Invoke-WebRequest $sum.browser_download_url).Content | Out-String).Trim().Split(" ")[0]
+Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing
+Invoke-WebRequest $sum.browser_download_url -OutFile "$zip.sha256" -UseBasicParsing
+$expected = (Get-Content "$zip.sha256" -Raw).Trim().Split(" ")[0]
+Remove-Item "$zip.sha256"
 $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected) {
     Remove-Item $zip
