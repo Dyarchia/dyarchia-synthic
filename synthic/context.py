@@ -779,11 +779,26 @@ class Context:
         middle when it alone is longer; then the newest ones that fit. What is
         left out is said, so the agent knows the summary is all it has of it.
         """
-        limit = self._settings.compact_pin_chars
         kept_as_is = {b["text"] for m in tail for b in m["content"] if b.get("type") == "text"}
-        texts = [(n, t) for n, t in enumerate(self._pinned, 1) if t not in kept_as_is]
-        if limit <= 0 or not texts:
+        body, left_out = self._asked(kept_as_is)
+        if not body:
             return ""
+        note = f" {left_out} of them did not fit and are only in the summary." if left_out else ""
+        return (
+            "[What you were asked, word for word and in order: the task, then each later message. A "
+            f"compaction never rewrites these.{note}]\n\n{body}\n\n"
+        )
+
+    def asked(self) -> str:
+        """What the agent was asked, word for word and numbered, within ``compact_pin_chars``; ``""`` when that is 0."""
+        return self._asked(set())[0]
+
+    def _asked(self, skip: set[str]) -> tuple[str, int]:
+        """The pinned texts not in ``skip`` as one numbered text, and how many did not fit."""
+        limit = self._settings.compact_pin_chars
+        texts = [(n, t) for n, t in enumerate(self._pinned, 1) if t not in skip]
+        if limit <= 0 or not texts:
+            return "", 0
         (number, first), later = texts[0], texts[1:]
         if len(first) > limit:
             half = limit // 2
@@ -794,13 +809,8 @@ class Context:
                 break
             chosen.insert(0, (n, t))
             room -= len(t)
-        left_out = len(later) - len(chosen)
-        note = f" {left_out} of them did not fit and are only in the summary." if left_out else ""
         body = "\n\n".join(f"Message {n}:\n{t}" for n, t in [(number, first), *chosen])
-        return (
-            "[What you were asked, word for word and in order: the task, then each later message. A "
-            f"compaction never rewrites these.{note}]\n\n{body}\n\n"
-        )
+        return body, len(later) - len(chosen)
 
     def repair_dangling(self, reason: str) -> list[ToolResultEntry]:
         """Answer every tool call of the last assistant message that has no result, as cancelled.

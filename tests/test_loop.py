@@ -58,6 +58,7 @@ def make_policy(tmp_path: Path, task: dict[str, Any] | None = None) -> LoadedPol
         },
         "journal": {"dir": str(tmp_path / "runs")},
         "context": {"compact_check": False},
+        "verify": {"reread": False},
     }
     return merge_levels([Level("defaults", factory_defaults()), Level("user", user), Level("task", task or {})])
 
@@ -607,6 +608,19 @@ def test_compaction_has_the_summary_reread_before_it_replaces_the_history(tmp_pa
     assert purposes == [None, "compaction", "compaction_check", None]
     assert result.status == "delivered" and result.steps == 2
     assert_replays(runtime)
+
+
+def test_the_first_done_is_answered_with_what_was_asked(tmp_path: Path) -> None:
+    runtime, result, provider = go(tmp_path, [done("First."), done("Second.")], {"verify": {"reread": True}})
+    answer = results(provider.requests[1])[0]
+    assert answer["is_error"] and "Message 1:\nDo the task." in answer["content"]
+    assert result.status == "delivered" and result.summary == "Second." and result.steps == 2
+    assert_replays(runtime)
+
+
+def test_a_failed_done_and_a_child_are_not_asked_to_reread(tmp_path: Path) -> None:
+    _, result, provider = go(tmp_path, [done("No way.", status="failed")], {"verify": {"reread": True}})
+    assert result.status == "failed" and len(provider.requests) == 1
 
 
 def test_a_summary_whose_reread_fails_is_used_as_it_was(tmp_path: Path) -> None:

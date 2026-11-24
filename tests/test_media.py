@@ -270,7 +270,7 @@ def test_cli_attach_checks_files_before_anything_starts(tmp_path: Path, capsys: 
 def test_cli_run_and_say_send_attachments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     picture = write(tmp_path, "p.png", png(2, 2))
     provider = ScriptedProvider([done()])
-    opts = ["--set", f"journal.dir={(tmp_path / 'runs').as_posix()}", "--set", "memory.enabled=false",
+    opts = ["--set", f"journal.dir={(tmp_path / 'runs').as_posix()}", "--set", "memory.enabled=false", "--set", "verify.reread=false",
             "--cwd", str(project(tmp_path))]
     monkeypatch.setenv("SYNTHIC_HOME", str(tmp_path / "home"))
     assert cli.main(["run", "Look.", "--attach", str(picture), "--quiet", *opts], provider_factory=lambda: provider) == 0

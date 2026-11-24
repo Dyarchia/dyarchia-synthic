@@ -269,7 +269,7 @@ _SCHEMA: dict[str, Any] = {
         "fetch_citations": "bool",
         "search_price": "number",
     },
-    "verify": {"commands": "strings", "review": "str", "rounds": "int", "timeout_seconds": "number"},
+    "verify": {"reread": "bool", "commands": "strings", "review": "str", "rounds": "int", "timeout_seconds": "number"},
     "checkpoints": {"edits": "bool", "shell": "bool"},
     "permissions": "rules",
     "hooks": "hooks",

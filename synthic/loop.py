@@ -106,6 +106,12 @@ agent's ``sh`` already started, which ``sh``'s own rules admitted.
 """
 
 ENDED_NORMALLY = frozenset({"end_turn", "stop_sequence"})
+REREAD = (
+    "Not delivered yet. First read again what you were asked, word for word:\n\n{asked}\n\n"
+    "Go through it against the work as it is now, line by line: every requirement, exact name, constraint and "
+    "rule, including those given before the current task. Fix whatever is missing or differs. Then call done "
+    "again; if nothing was, call it with the same summary."
+)
 COMPACTION_CHECK = (
     "Before the conversation is replaced, check your summary against it. Go through the conversation above and "
     "look for anything you would need to continue and finish the work that the summary lacks or states wrongly: a "
@@ -357,6 +363,7 @@ class Agent:
         self._resumed = False
         self._paused = False
         self.rejections = 0
+        self._reread = False
         self._result: tuple[Any] | None = None
         """The delivered ``result``, as a 1-tuple so that a JSON ``null`` result is still a result."""
         self.ended_by_done = False
@@ -603,6 +610,8 @@ class Agent:
         text = mask(text)
         attachments = [replace(a, name=mask(a.name), note=mask(a.note)) for a in attachments]
         self.context.add_user(text, attachments, pinned=source in PINNED_SOURCES)
+        if source in PINNED_SOURCES:
+            self._reread = False
         data: dict[str, Any] = {"text": text, "source": source}
         if attachments:
             data["attachments"] = [
@@ -1302,6 +1311,8 @@ class Agent:
             if errors := validate_result(tool_input["result"], schema):
                 listed = "\n".join(f"- {e}" for e in errors)
                 return ToolOutput(f"Not finished: `result` does not match the schema:\n{listed}", is_error=True)
+        if status == "delivered" and self._reread_due():
+            return ToolOutput(REREAD.format(asked=self.context.asked()), is_error=True)
         outcome = await self._emit("before_done", summary=summary, status=status)
         if outcome.action == "block":
             return ToolOutput(
@@ -1319,6 +1330,19 @@ class Agent:
             self._result = (self.runtime.masker.mask_obj(tool_input["result"]),)
         self.ended_by_done = True
         return ToolOutput("Finished.")
+
+    def _reread_due(self) -> bool:
+        """Whether this ``done`` is answered with what was asked instead of delivering (``verify.reread``).
+
+        Once per delivery of the root agent, and again after each new message
+        from the human. It is not a check by someone else: late in a long
+        task the agent's attention is on its last steps, and reading the
+        request again is what brings back a requirement it left behind.
+        """
+        if self.parent_id is not None or not self.policy.verify.reread or self._reread or not self.context.asked():
+            return False
+        self._reread = True
+        return True
 
     @property
     def cancel_event(self) -> asyncio.Event:

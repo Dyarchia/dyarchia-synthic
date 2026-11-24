@@ -30,6 +30,9 @@ from synthic.testing import ScriptedProvider, reply, text, tool_use
 POLICY = """
 initial_role = "lead"
 
+[verify]
+reread = false
+
 [models.test]
 id = "test-model"
 context_window = 200000

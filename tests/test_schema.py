@@ -154,7 +154,7 @@ def test_cli_result_schema_flag_and_json_output(
     schema.write_text(json.dumps({"type": "object", "required": ["ok"]}), encoding="utf-8")
     policy = tmp_path / "policy.toml"
     policy.write_text(
-        f'[journal]\ndir = "{(tmp_path / "runs").as_posix()}"\n[memory]\nenabled = false\n', encoding="utf-8"
+        f'[journal]\ndir = "{(tmp_path / "runs").as_posix()}"\n[memory]\nenabled = false\n[verify]\nreread = false\n', encoding="utf-8"
     )
     provider = ScriptedProvider([deliver({"ok": True})])
     args = ["run", "Do it.", "--json", "--cwd", str(folder), "--policy", str(policy), "--result-schema", str(schema)]

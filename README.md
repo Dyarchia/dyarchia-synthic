@@ -171,7 +171,11 @@ model = "sonnet"
 tools = ["sh"]
 ```
 
-- Off by default. It runs only when the root agent calls `done` as delivered: first the `before_done`
+- **Reread** (`verify.reread`, on by default): the root agent's first `done` of a delivery is answered with
+  what it was asked, word for word (the task and every later message), and it must go through it against
+  its work before calling `done` again. It costs one step and is not a review by anyone else: it brings the
+  agent's attention back to the request at the end of a long task. A new message from the human arms it again.
+- The checks below are off by default. They run only when the root agent calls `done` as delivered: first the `before_done`
   hook, then the commands in the working folder (each must exit 0 within `verify.timeout_seconds`, 1800 by
   default, or it is killed and fails), then the review. Running children are cancelled first, as every
   `done` does. The root agent's system prompt names the checks, so it can run them itself first.

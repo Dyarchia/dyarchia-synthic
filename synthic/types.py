@@ -469,8 +469,13 @@ class VerifySettings:
     that judges the work with a fresh context. ``rounds`` is how many times a
     delivery may be rejected; one that still fails after that is accepted and
     marked as not verified.
+
+    ``reread`` is apart from those and on by default: the root agent's first
+    ``done`` of a delivery is answered with what it was asked, word for word,
+    so it goes through the request once more before it delivers.
     """
 
+    reread: bool = True
     commands: tuple[str, ...] = ()
     review: str | None = None
     rounds: int = 2
