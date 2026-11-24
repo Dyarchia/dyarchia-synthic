@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from . import __version__
 from .agents import Runtime
 from .checkpoints import describe as describe_checkpoint
 from .checkpoints import rewind
@@ -892,6 +893,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser = argparse.ArgumentParser(prog="synthic", description="An agent harness: the engine and nothing else.")
+    parser.add_argument("--version", action="version", version=f"synthic {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     def add(name: str, handler: Callable[..., int], help_text: str, *parents: argparse.ArgumentParser) -> argparse.ArgumentParser:

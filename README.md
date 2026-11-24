@@ -7,11 +7,22 @@ a run goes on by itself, and the human can interrupt it at any moment.
 
 ## Install
 
+Windows, no Python needed:
+
+```powershell
+irm https://raw.githubusercontent.com/Dyarchia/synthic/main/install.ps1 | iex
+```
+
+It unpacks the latest release into `%LOCALAPPDATA%\Programs\synthic` and adds that folder to the user
+PATH. Run it again to update. Only Windows builds are published and tested so far.
+
+From source, with Python 3.12 or newer (the only dependency is `httpx`):
+
 ```bash
 py -m pip install -e .
 ```
 
-Python 3.12 or newer. The only dependency is `httpx`. Set `ANTHROPIC_API_KEY` in the environment; it is
+Set `ANTHROPIC_API_KEY` in the environment; it is
 not passed to the agent's shell, hooks or MCP servers unless `[environment.env]` sets it.
 
 ## Smallest run
@@ -358,3 +369,7 @@ py -m pytest -q
 
 The tests run offline against a scripted model and a fake Docker client. A few tests use a real Docker daemon
 and are skipped unless one answers and `alpine:3.20` is already pulled.
+
+## License
+
+Apache-2.0. See `LICENSE`.
