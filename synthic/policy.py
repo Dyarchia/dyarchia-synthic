@@ -220,6 +220,7 @@ _SCHEMA: dict[str, Any] = {
         "clean_keep_recent": "int",
         "clean_min_chars": "int",
         "compact_at": "number",
+        "compact_within_price_tier": "bool",
         "compact_keep_turns": "int",
         "compact_keep_chars": "int",
         "compact_boundary_tokens": "int",

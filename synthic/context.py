@@ -637,8 +637,20 @@ class Context:
         first_line = lines[0].rstrip("\r")[:_STUB_FIRST_LINE] if lines else ""
         return f"[output cleared; receipt {receipt_id}, {len(lines):,} lines, {len(text):,} chars: {first_line}]"
 
+    def compaction_window(self, model: ModelSpec) -> int:
+        """The prompt size ``compact_at`` and ``compact_prepare_at`` are shares of.
+
+        The context window, or the model's ``long_prompt_threshold`` when it has
+        one and ``compact_within_price_tier`` is on: past that size every token
+        of every later step costs ``long_prompt_factor`` times more, which a
+        summary written just before avoids.
+        """
+        if self._settings.compact_within_price_tier and model.long_prompt_threshold:
+            return min(model.context_window, model.long_prompt_threshold)
+        return model.context_window
+
     def should_compact(self, model: ModelSpec) -> bool:
-        """True when the next prompt is estimated to reach ``compact_at`` of the context window.
+        """True when the next prompt is estimated to reach ``compact_at`` of ``compaction_window``.
 
         The estimate is the prompt measured on the last call, scaled down by
         how much the history shrank since (a clean), in characters. It is never
@@ -650,7 +662,7 @@ class Context:
         if self._last_call_at is None or self._chars_at_call == 0:
             return False
         ratio = min(1.0, self._chars() / self._chars_at_call)
-        return self._last_prompt_tokens * ratio >= self._settings.compact_at * model.context_window
+        return self._last_prompt_tokens * ratio >= self._settings.compact_at * self.compaction_window(model)
 
     def compaction_request(self) -> str:
         """The compaction template, to be sent to the model as a user message."""

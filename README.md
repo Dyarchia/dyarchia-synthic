@@ -86,7 +86,8 @@ With `environment.mode = "copy"`, each child works in a copy, on the git branch
 - **Compaction** replaces the history with a summary the model writes from a template
   (`context.compaction_template`, yours to replace). It keeps the newest `compact_keep_turns` turns as
   they are, up to `compact_keep_chars`. It runs when the prompt reaches `compact_at` of the context
-  window, and also between two tasks: a new text given to `resume` on a delivered run compacts the
+  window, or of the size where the model starts charging more (`long_prompt_threshold`, 100,000 tokens
+  on Haiku) unless `compact_within_price_tier = false`, and also between two tasks: a new text given to `resume` on a delivered run compacts the
   finished task first when its prompt had reached `compact_boundary_tokens` (0 turns this off).
 - **Background summary** (`context.compact_background = true`, off by default): once the prompt reaches
   `compact_prepare_at` of the window (0.6), the summary is asked for in the background, right after a step, with

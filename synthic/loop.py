@@ -785,7 +785,7 @@ class Agent:
     def _maybe_prepare(self, request: ModelRequest, prompt_tokens: int) -> None:
         """Start a background summary after a step, when ``context.compact_background`` asks for one now.
 
-        Due once the prompt reaches ``compact_prepare_at`` of the window, and
+        Due once the prompt reaches ``compact_prepare_at`` of ``compaction_window``, and
         again each time it has grown ``compact_refresh_tokens`` past the prompt
         a ready summary was made from; one at a time. The request is the one
         this step just sent, with the compaction template appended to its last
@@ -800,7 +800,7 @@ class Agent:
             return
         if self._preparing is not None and not self._preparing.done():
             return
-        if prompt_tokens < settings.compact_prepare_at * request.model.context_window:
+        if prompt_tokens < settings.compact_prepare_at * self.context.compaction_window(request.model):
             return
         ready = self._prepared
         if ready is not None and self.context.fingerprint(ready.covered) != ready.fingerprint:

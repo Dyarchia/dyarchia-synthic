@@ -356,6 +356,8 @@ class ContextSettings:
     clean_keep_recent: int = 6
     clean_min_chars: int = 600
     compact_at: float = 0.85
+    compact_within_price_tier: bool = True
+    """Measure ``compact_at`` against the model's ``long_prompt_threshold`` when it has one, not the whole window."""
     compact_keep_turns: int = 2
     compact_keep_chars: int = 24000
     compact_boundary_tokens: int = 80000

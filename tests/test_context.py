@@ -564,3 +564,12 @@ def test_boundary_is_due_only_above_the_token_limit(tmp_path: Path) -> None:
     off = Driver(tmp_path / "b", replace(SETTINGS, compact_boundary_tokens=0))
     off.ctx.restore_measure(10_000)
     assert not off.ctx.boundary_due()
+
+
+def test_compaction_window_stops_at_the_price_tier(tmp_path: Path) -> None:
+    tiered = replace(MODEL, long_prompt_threshold=400)
+    driver = Driver(tmp_path)
+    assert driver.ctx.compaction_window(MODEL) == 1000
+    assert driver.ctx.compaction_window(tiered) == 400
+    off = Driver(tmp_path / "off", replace(SETTINGS, compact_within_price_tier=False))
+    assert off.ctx.compaction_window(tiered) == 1000
