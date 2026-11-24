@@ -224,6 +224,8 @@ _SCHEMA: dict[str, Any] = {
         "compact_keep_turns": "int",
         "compact_keep_chars": "int",
         "compact_boundary_tokens": "int",
+        "compact_pin_chars": "int",
+        "compact_check": "bool",
         "compaction_template": "str",
         "compact_background": "bool",
         "compact_prepare_at": "number",

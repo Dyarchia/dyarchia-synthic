@@ -57,6 +57,7 @@ CHARS_PER_TOKEN = 4
 THINKING = frozenset({"thinking", "redacted_thinking"})
 _TTL_SECONDS = {"5m": 300.0, "1h": 3600.0}
 _COMPACTION_TEMPLATE = Path(__file__).with_name("compaction.md")
+PINNED_SOURCES = ("human", "parent")
 
 
 def _lines(text: str) -> list[str]:
@@ -267,13 +268,19 @@ class Context:
         self._cleaned: set[str] = set()
         self._attachments: dict[int, tuple[str, Block]] = {}
         self._attached = 0
-        self._held: list[tuple[str, Sequence[Attachment]]] = []
+        self._held: list[tuple[str, Sequence[Attachment], bool]] = []
+        self._pinned: list[str] = []
         self._last_call_at: float | None = None
         self._last_prompt_tokens = 0
         self._chars_at_call = 0
 
-    def add_user(self, text: str, attachments: Sequence[Attachment] = ()) -> None:
+    def add_user(self, text: str, attachments: Sequence[Attachment] = (), *, pinned: bool = False) -> None:
         """Add a user message; ``attachments`` go before the text, each after a one-line label naming it.
+
+        ``pinned`` marks what the agent was asked: the task and every later
+        message from the human or the parent. A compaction carries those texts
+        over word for word (see ``apply_compaction``) and never leaves them to
+        the summary, which a model writes and may shorten.
 
         Attachments are numbered in the order they enter, which replay
         repeats, so a ``clean`` record can name them by number.
@@ -288,8 +295,10 @@ class Context:
         if not text:
             raise ValueError("empty user text")
         if self.server_pending():
-            self._held.append((text, attachments))
+            self._held.append((text, attachments, pinned))
             return
+        if pinned:
+            self._pinned.append(text)
         blocks: list[Block] = []
         for attachment in attachments:
             self._attached += 1
@@ -317,8 +326,8 @@ class Context:
         if not self._held or self.server_pending():
             return False
         held, self._held = self._held, []
-        for text, attachments in held:
-            self.add_user(text, attachments)
+        for text, attachments, pinned in held:
+            self.add_user(text, attachments, pinned=pinned)
         return True
 
     def server_pending(self) -> bool:
@@ -736,14 +745,15 @@ class Context:
     def apply_compaction(self, summary: str, keep: int = 0) -> None:
         """Replace the history with ``summary``, followed by its last ``keep`` messages as they were.
 
-        The kept messages lose their thinking blocks: their prefix changed, and
+        The pinned texts go first, word for word (``_pinned_block``). The kept
+        messages lose their thinking blocks: their prefix changed, and
         thinking bound to another prefix is rejected (see ``clean_if_cold``).
         A pure function of the history, ``summary`` and ``keep``, so a replay
         gives the same bytes.
         """
         tail = self._messages[-keep:] if keep > 0 else []
         follows = " The most recent steps follow it unchanged." if tail else ""
-        text = (
+        text = self._pinned_block(tail) + (
             "[Summary of earlier work. The conversation before this point was replaced by this summary "
             "to save context. Every receipt it mentions (r1, r2, ...) is still stored: search it or read "
             f"a line range with the receipt tool.{follows}]\n\n" + summary
@@ -759,6 +769,38 @@ class Context:
         present = {id(b) for m in self._messages for b in m["content"]}
         self._attachments = {n: a for n, a in self._attachments.items() if id(a[1]) in present}
         self._chars_at_call = 0
+
+    def _pinned_block(self, tail: list[Message]) -> str:
+        """The pinned texts a compaction carries over, as the opening of the message that holds the summary.
+
+        Texts still present in ``tail`` are left out, since they follow
+        unchanged. The whole block stays within ``compact_pin_chars`` (0 pins
+        nothing): the first text is the task and always stays, cut in the
+        middle when it alone is longer; then the newest ones that fit. What is
+        left out is said, so the agent knows the summary is all it has of it.
+        """
+        limit = self._settings.compact_pin_chars
+        kept_as_is = {b["text"] for m in tail for b in m["content"] if b.get("type") == "text"}
+        texts = [(n, t) for n, t in enumerate(self._pinned, 1) if t not in kept_as_is]
+        if limit <= 0 or not texts:
+            return ""
+        (number, first), later = texts[0], texts[1:]
+        if len(first) > limit:
+            half = limit // 2
+            first = f"{first[:half]}\n[... {len(first) - 2 * half:,} chars left out ...]\n{first[-half:]}"
+        chosen, room = [], limit - len(first)
+        for n, t in reversed(later):
+            if len(t) > room:
+                break
+            chosen.insert(0, (n, t))
+            room -= len(t)
+        left_out = len(later) - len(chosen)
+        note = f" {left_out} of them did not fit and are only in the summary." if left_out else ""
+        body = "\n\n".join(f"Message {n}:\n{t}" for n, t in [(number, first), *chosen])
+        return (
+            "[What you were asked, word for word and in order: the task, then each later message. A "
+            f"compaction never rewrites these.{note}]\n\n{body}\n\n"
+        )
 
     def repair_dangling(self, reason: str) -> list[ToolResultEntry]:
         """Answer every tool call of the last assistant message that has no result, as cancelled.
@@ -786,6 +828,7 @@ class Context:
         self._attachments.clear()
         self._attached = 0
         self._held = []
+        self._pinned = []
         receipts = self._receipts
         for record in records:
             data = record.data
@@ -795,7 +838,7 @@ class Context:
                         Attachment(a["name"], unpack(a["block"], receipts), a["note"])
                         for a in data.get("attachments", [])
                     ]
-                    self.add_user(data["text"], attachments)
+                    self.add_user(data["text"], attachments, pinned=data.get("source") in PINNED_SOURCES)
                 case "assistant":
                     self.add_assistant(unpack(data["content"], receipts))
                 case "tool_result":

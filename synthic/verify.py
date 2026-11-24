@@ -208,7 +208,8 @@ class Verifier:
             "You review work that another agent says it has finished. Judge it against what the human asked; do "
             "not change anything yourself.",
             "",
-            "Messages from the human, in order (the first one is the task):",
+            "Messages from the human, in order. The first one is the task; a later one adds to it, changes it or "
+            "gives the next task, and the newest one is what this delivery answers. Earlier ones still bind:",
             *messages,
             "",
             "The delivering agent's summary:",

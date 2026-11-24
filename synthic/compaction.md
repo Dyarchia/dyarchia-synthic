@@ -6,17 +6,18 @@ Tool outputs stay on disk under their receipt ids (r1, r2, ...) and remain reada
 `receipt` tool after this point. Keep the ids worth rereading; do not copy their contents.
 Your system prompt stays as it is: do not repeat anything it says.
 
-Copy word for word, never paraphrase: what the human asked and every correction the human made,
-error messages, and identifiers (names, paths, ids, values). If you must cut, cut from the bottom
-of this list first: finished work, work in progress, errors, corrections from the human.
+What you were asked (the task and every later message from the human) stays in the conversation word
+for word, ahead of your summary: do not copy it, refer to it. Copy word for word, never paraphrase:
+error messages and identifiers (names, paths, ids, values). If you must cut, cut from the bottom of
+this list first: finished work, work in progress, errors.
 
 Use exactly these sections:
 
 ## Task
-The task as it was given, with every requirement and constraint, in the original words.
+Which of the messages you were asked is the current task, in one line, and what it still requires.
 
 ## Corrections
-Each time the human corrected or redirected you, in their words, and what you changed because of it.
+Each time the human corrected or redirected you, and what you changed because of it.
 
 ## Done
 What is finished and verified, and how it was verified.

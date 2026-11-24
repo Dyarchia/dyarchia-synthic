@@ -89,6 +89,11 @@ With `environment.mode = "copy"`, each child works in a copy, on the git branch
   window, or of the size where the model starts charging more (`long_prompt_threshold`, 100,000 tokens
   on Haiku) unless `compact_within_price_tier = false`, and also between two tasks: a new text given to `resume` on a delivered run compacts the
   finished task first when its prompt had reached `compact_boundary_tokens` (0 turns this off).
+- **What the agent was asked is never summarized.** The task and every later message from the human
+  (or from the parent, for a child) are carried over word for word ahead of the summary, up to
+  `compact_pin_chars` (40000; the task always, then the newest that fit; 0 turns this off).
+- **The summary is reread before it is used** (`compact_check`, on by default): one more call asks the
+  agent to check its summary against the conversation it still has and to answer with the complete one.
 - **Background summary** (`context.compact_background = true`, off by default): once the prompt reaches
   `compact_prepare_at` of the window (0.6), the summary is asked for in the background, right after a step, with
   that step's exact request plus the template, so it reads the prompt from the cache. It is asked again each time

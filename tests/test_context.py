@@ -54,7 +54,7 @@ class Driver:
         self.records.append(Record(len(self.records), 0.0, "a1", kind, json.loads(json.dumps(data))))
 
     def user(self, text: str) -> None:
-        self.ctx.add_user(text)
+        self.ctx.add_user(text, pinned=True)
         self.log("user", {"text": text, "source": "human"})
 
     def assistant(self, *calls: str, text: str = "", thinking: bool = True) -> None:
@@ -88,7 +88,8 @@ class Driver:
         return ids
 
     def compact(self, summary: str) -> None:
-        self.user(self.ctx.compaction_request())
+        self.ctx.add_user(self.ctx.compaction_request())
+        self.log("user", {"text": self.ctx.compaction_request(), "source": "engine"})
         self.assistant(text=summary)
         self.ctx.apply_compaction(summary)
         self.log("compaction", {"summary": summary})
@@ -438,9 +439,53 @@ def test_compaction_threshold_and_shape(tmp_path: Path) -> None:
     messages = d.ctx.build()[1]
     assert len(messages) == 1 and messages[0]["role"] == "user"
     text = messages[0]["content"][0]["text"]
-    assert text.startswith("[Summary of earlier work.") and "receipt tool" in text
+    assert text.startswith("[What you were asked, word for word") and "receipt tool" in text
+    assert "Message 1:\ntask\n\n[Summary of earlier work." in text
     assert text.endswith("did things, see r1")
     assert not d.ctx.should_compact(MODEL)
+
+
+def test_compaction_carries_over_what_was_asked_word_for_word(tmp_path: Path) -> None:
+    d = Driver(tmp_path, replace(SETTINGS, compact_keep_turns=1, compact_keep_chars=10_000))
+    d.user("Build it. AIMessage has role and content.")
+    d.assistant("c1")
+    d.results({"c1": "one"})
+    d.ctx.add_user("[budget] half used")
+    d.log("user", {"text": "[budget] half used", "source": "engine"})
+    d.user("Also name the field Step__c.")
+    d.compact("first summary")
+    d.assistant("c2")
+    d.results({"c2": "two"})
+    d.assistant("c3")
+    d.results({"c3": "three"})
+    d.user("Use Number(18,6).")
+    keep = d.ctx.compaction_keep()
+    d.ctx.apply_compaction("second summary", keep)
+    d.log("compaction", {"summary": "second summary", "keep": keep})
+    messages = d.ctx.build()[1]
+    opening = messages[0]["content"][0]["text"]
+    assert "Message 1:\nBuild it. AIMessage has role and content.\n\nMessage 2:\nAlso name the field Step__c." in opening
+    assert "budget" not in opening and "first summary" not in opening and opening.endswith("second summary")
+    assert keep == 2 and "Number(18,6)" not in opening
+    assert messages[-1]["content"][-1]["text"] == "Use Number(18,6)."
+    d.compact("third summary")
+    assert "Message 3:\nUse Number(18,6)." in d.ctx.build()[1][0]["content"][0]["text"]
+    assert dump(d.replayed()) == dump(d.ctx)
+
+
+def test_pinned_messages_stay_within_their_budget(tmp_path: Path) -> None:
+    d = Driver(tmp_path, replace(SETTINGS, compact_pin_chars=100))
+    d.user("T" * 300)
+    d.user("old " + "o" * 60)
+    d.user("new " + "n" * 30)
+    d.compact("summary")
+    opening = d.ctx.build()[1][0]["content"][0]["text"]
+    assert "T" * 50 + "\n[... 200 chars left out ...]\n" + "T" * 50 in opening
+    assert "Message 2" not in opening and "Message 3" not in opening and "2 of them did not fit" in opening
+    off = Driver(tmp_path / "off", replace(SETTINGS, compact_pin_chars=0))
+    off.user("task")
+    off.compact("summary")
+    assert off.ctx.build()[1][0]["content"][0]["text"].startswith("[Summary of earlier work.")
 
 
 def test_custom_compaction_template(tmp_path: Path) -> None:

@@ -566,7 +566,7 @@ def test_a_new_task_on_a_delivered_run_compacts_the_finished_one_first(tmp_path:
     assert result.summary == "Two."
     assert "Use exactly these sections" in json.dumps(provider.requests[0].messages[-1])
     after = provider.requests[1].messages
-    assert after[0]["content"][0]["text"].startswith("[Summary of earlier work")
+    assert "[Summary of earlier work" in after[0]["content"][0]["text"]
     assert "follow it unchanged" in after[0]["content"][0]["text"]
     assert [m["role"] for m in after] == ["user", "assistant", "user", "assistant", "user"]
     assert after[-1]["content"][-1] == text("Second task.")

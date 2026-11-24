@@ -62,7 +62,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from . import verify, web
 from .checkpoints import Recorder
 from .schema import validate as validate_result
-from .context import THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
+from .context import PINNED_SOURCES, THINKING, Context, ReceiptStore, ReceiptTool, ToolResultEntry, pack
 from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
 from .prompt import build_system
@@ -106,6 +106,14 @@ agent's ``sh`` already started, which ``sh``'s own rules admitted.
 """
 
 ENDED_NORMALLY = frozenset({"end_turn", "stop_sequence"})
+COMPACTION_CHECK = (
+    "Before the conversation is replaced, check your summary against it. Go through the conversation above and "
+    "look for anything you would need to continue and finish the work that the summary lacks or states wrongly: a "
+    "requirement or constraint, a decision and its reason, a fact you found out about the system, an exact name, "
+    "path, id, value or command, an error still open, a step still to do. Then reply with the complete final "
+    "summary, in the same sections, corrected and completed. It replaces the first one, so do not answer with "
+    "only the differences. Do not call any tool."
+)
 """Stop reasons after which a compaction summary is complete and can replace the history."""
 
 UNKNOWN_OUTCOME = (
@@ -594,7 +602,7 @@ class Agent:
         mask = self.runtime.masker.mask
         text = mask(text)
         attachments = [replace(a, name=mask(a.name), note=mask(a.note)) for a in attachments]
-        self.context.add_user(text, attachments)
+        self.context.add_user(text, attachments, pinned=source in PINNED_SOURCES)
         data: dict[str, Any] = {"text": text, "source": source}
         if attachments:
             data["attachments"] = [
@@ -777,10 +785,39 @@ class Agent:
             self._compaction_failed(f"compaction gave no usable summary (stop reason {reply.stop_reason})")
             return
         self._compact_retry_at = None
+        if self.policy.context.compact_check:
+            summary = await self._checked_summary(request, reply, summary)
         summary = self.runtime.masker.mask(self._with_todo(summary))
         keep = self.context.compaction_keep()
         self.context.apply_compaction(summary, keep)
         self.journal.append("compaction", {"summary": summary, "keep": keep})
+
+    async def _checked_summary(self, request: ModelRequest, draft: ModelReply, summary: str) -> str:
+        """The summary after the agent has read it against the conversation it replaces (``context.compact_check``).
+
+        One more call on the same request, with the draft as the assistant turn
+        and ``COMPACTION_CHECK`` after it: the model still has the whole
+        conversation, so this is the last moment it can notice what the draft
+        lost. The reply replaces the draft. A check that fails, is cut or
+        calls a tool leaves the draft as it is: a summary nobody reread is
+        better than none.
+        """
+        messages = [
+            *request.messages,
+            {"role": "assistant", "content": draft.content},
+            {"role": "user", "content": [{"type": "text", "text": COMPACTION_CHECK}]},
+        ]
+        try:
+            reply = await self.runtime.provider.complete(replace(request, messages=messages), cancel=self._cancel)
+        except asyncio.CancelledError:
+            if self._cancel.is_set():
+                return summary
+            raise
+        except ProviderError:
+            return summary
+        self._account(reply, purpose="compaction_check")
+        checked = "\n".join(b["text"] for b in reply.content if b.get("type") == "text").strip()
+        return checked if reply.stop_reason in ENDED_NORMALLY and checked else summary
 
     def _maybe_prepare(self, request: ModelRequest, prompt_tokens: int) -> None:
         """Start a background summary after a step, when ``context.compact_background`` asks for one now.

@@ -57,6 +57,7 @@ def make_policy(tmp_path: Path, task: dict[str, Any] | None = None) -> LoadedPol
             "worker": {"model": "test", "tools": ["sh", "edit"]},
         },
         "journal": {"dir": str(tmp_path / "runs")},
+        "context": {"compact_check": False},
     }
     return merge_levels([Level("defaults", factory_defaults()), Level("user", user), Level("task", task or {})])
 
@@ -585,9 +586,37 @@ def test_compaction_replaces_the_history_with_the_summary(tmp_path: Path) -> Non
     )
     assert "Use exactly these sections" in dump(provider.requests[1].messages[-1])
     after = provider.requests[2].messages
-    assert len(after) == 1 and after[0]["content"][0]["text"].startswith("[Summary of earlier work")
+    opening = after[0]["content"][0]["text"]
+    assert len(after) == 1 and opening.startswith("[What you were asked, word for word")
+    assert "Message 1:\nDo the task.\n\n[Summary of earlier work" in opening
     assert "compaction" in kinds(runtime)
     assert result.status == "delivered" and result.steps == 2
+
+
+def test_compaction_has_the_summary_reread_before_it_replaces_the_history(tmp_path: Path) -> None:
+    big = Usage(input_tokens=900, output_tokens=10, cost_usd=0.001)
+    rules = {"models": {"test": {"context_window": 1000}}, "context": {"compact_at": 0.5, "compact_check": True}}
+    script = [reply(tool_use("receipt", {"id": "r1"}), usage=big), reply(text("Draft.")), reply(text("Complete.")), done()]
+    runtime, result, provider = go(tmp_path, script, rules)
+    check = provider.requests[2].messages
+    assert check[-2] == {"role": "assistant", "content": [{"type": "text", "text": "Draft."}]}
+    assert "check your summary against it" in check[-1]["content"][0]["text"]
+    opening = provider.requests[3].messages[0]["content"][0]["text"]
+    assert opening.endswith("Complete.") and "Draft." not in opening
+    purposes = [r["data"].get("purpose") for r in records(runtime) if r["kind"] == "model_call"]
+    assert purposes == [None, "compaction", "compaction_check", None]
+    assert result.status == "delivered" and result.steps == 2
+    assert_replays(runtime)
+
+
+def test_a_summary_whose_reread_fails_is_used_as_it_was(tmp_path: Path) -> None:
+    big = Usage(input_tokens=900, output_tokens=10, cost_usd=0.001)
+    rules = {"models": {"test": {"context_window": 1000}}, "context": {"compact_at": 0.5, "compact_check": True}}
+    cut = reply(text("Half a"), stop_reason="max_tokens")
+    script = [reply(tool_use("receipt", {"id": "r1"}), usage=big), reply(text("Draft.")), cut, done()]
+    runtime, result, provider = go(tmp_path, script, rules)
+    assert provider.requests[3].messages[0]["content"][0]["text"].endswith("Draft.")
+    assert result.status == "delivered"
 
 
 def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
