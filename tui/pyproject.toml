@@ -1,0 +1,17 @@
+[project]
+name = "synthic-tui"
+version = "0.2.0"
+description = "Terminal interface of the Synthic agent harness"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = ["synthic", "textual>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["synthic_tui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

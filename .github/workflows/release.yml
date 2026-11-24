@@ -12,12 +12,13 @@ jobs:
             - uses: actions/setup-python@v5
               with:
                   python-version: "3.12"
-            - run: python -m pip install pyinstaller build pytest .
+            - run: python -m pip install pyinstaller build pytest . ./tui
             - name: Tag matches the package version
               run: |
                   $version = python -c "import synthic; print(synthic.__version__)"
                   if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME, package $version" }
             - run: python -m pytest -q
+            - run: python -m pytest -q tui
             - run: ./packaging/build.ps1
             - run: python -m build --wheel --outdir build/release
             - name: Publish the release

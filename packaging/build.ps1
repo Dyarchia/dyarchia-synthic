@@ -6,6 +6,7 @@ $version = & $Python -c "import $name; print($name.__version__)"
 $out = Join-Path $root "build\release"
 & $Python -m PyInstaller --noconfirm --clean --onedir --console --name $name `
     --collect-data $name --collect-submodules $name `
+    --collect-submodules synthic_tui --collect-all textual `
     --distpath "$out\dist" --workpath "$out\work" --specpath "$out\spec" (Join-Path $PSScriptRoot "entry.py")
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 $zip = Join-Path $out "$name-$version-windows-x64.zip"

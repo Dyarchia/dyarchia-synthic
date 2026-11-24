@@ -554,6 +554,17 @@ def cmd_run(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     )
 
 
+def cmd_tui(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
+    """Open the terminal interface. It is a separate package, so the engine carries no interface code."""
+    try:
+        from synthic_tui.app import run
+    except ImportError:
+        raise CliError("the terminal interface is not installed: install the synthic-tui package") from None
+    cwd, _ = load(args)
+    require_key(factory)
+    return run(cwd, lambda: load(args)[1], factory, " ".join(args.task))
+
+
 def cmd_resume(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     _, loaded = load(args)
     run_id, words = split_run(loaded, args.words, 0)
@@ -908,6 +919,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--result-schema", metavar="FILE", help="a JSON Schema file: the delivery must carry a result matching it"
     )
+    tui = add("tui", cmd_tui, "open the terminal interface: start, follow and steer runs on one screen")
+    tui.add_argument("task", nargs="*", help="a task to start with (optional)")
     resume = add(
         "resume", cmd_resume, "continue a crashed or stopped run, or an ended one when given a text", output, attach
     )

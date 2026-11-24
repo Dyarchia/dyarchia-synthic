@@ -48,9 +48,16 @@ cd C:\Users\you\my-project
 synthic run "Add a --verbose flag to cli.py and a test for it"
 ```
 
+To work on one screen instead, with the conversation, the cost and a box to talk to the agent:
+
+```powershell
+synthic tui
+```
+
 ```text
 Command                          What it does
 -------------------------------  ---------------------------------------------------
+synthic tui                      Open the screen: start, follow and steer runs
 synthic run "task"               Do a task from start to finish
 synthic resume RUN "next task"   Go on in the same conversation
 synthic runs                     List your runs
