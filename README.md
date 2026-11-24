@@ -44,7 +44,7 @@ To update, paste the line of step 1 again. To uninstall, delete `%LOCALAPPDATA%\
 Go to the folder of your project and give it a task:
 
 ```powershell
-cd C:\path	o\your\project
+cd C:\Users\you\my-project
 synthic run "Add a --verbose flag to cli.py and a test for it"
 ```
 
