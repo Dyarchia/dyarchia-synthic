@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$repo = "Dyarchia/synthic"
+$repo = "Dyarchia/dyarchia-synthic"
 $name = "synthic"
 $target = Join-Path $env:LOCALAPPDATA "Programs\$name"
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
