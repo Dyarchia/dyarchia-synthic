@@ -564,8 +564,21 @@ def cmd_run(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     )
 
 
+NO_CONSOLE = (
+    "the interface needs a terminal and standard input or output is not one (a pipe, or a Git Bash window "
+    "without a Windows console). In Git Bash start it as `winpty synthic`, or use PowerShell, cmd or Windows "
+    "Terminal. To run a task from a script, use `synthic run \"task\"`."
+)
+
+
 def cmd_tui(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
-    """Open the terminal interface. It is a separate package, so the engine carries no interface code."""
+    """Open the terminal interface. It is a separate package, so the engine carries no interface code.
+
+    Without a real terminal the interface would draw into a pipe and ignore every key, then never end: it
+    refuses to start instead.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise CliError(NO_CONSOLE)
     try:
         from synthic_tui.app import run
     except ImportError:

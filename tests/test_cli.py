@@ -742,3 +742,20 @@ def test_a_replied_run_exits_zero_and_continues_with_resume(setup: Setup, capsys
     provider = ScriptedProvider([done("Finished.")])
     assert main(["resume", run_id, "now finish", *setup.opts, "--set", "human.present=true"], provider_factory=lambda: provider) == 0
     assert "status: delivered" in capsys.readouterr().out
+
+
+def test_the_interface_refuses_to_start_without_a_terminal(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["tui"]) == 2
+    assert "winpty synthic" in capsys.readouterr().err
+
+
+def test_a_bare_synthic_on_pipes_ends_at_once_instead_of_hanging(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    env = {**os.environ, "SYNTHIC_HOME": str(tmp_path)}
+    done = subprocess.run(
+        [sys.executable, "-m", "synthic"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, env=env
+    )
+    assert done.returncode == 2 and "winpty synthic" in done.stderr
