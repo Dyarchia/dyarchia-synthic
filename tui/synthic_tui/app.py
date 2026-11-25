@@ -31,30 +31,32 @@ from textual.widgets.option_list import Option
 from synthic import __version__
 from synthic.agents import Runtime
 from synthic.cli import clock, short, summarize
-from synthic.journal import is_alive, list_runs, read_records
+from synthic.journal import agents_in, is_alive, list_runs, read_records
 from synthic.policy import LoadedPolicy
-from synthic.transcript import entries, result_summary
+from synthic.transcript import entries, markdown, result_summary
 from synthic.types import Provider
 
 Load = Callable[[dict[str, Any] | None], LoadedPolicy]
 
 COMMANDS = {
     "help": "show the commands and the keys",
-    "new": "start a new conversation",
+    "clear": "start a new conversation",
     "resume": "open an earlier run and continue it",
     "model": "choose the model of the next tasks",
     "effort": "choose the effort of the next tasks",
     "stop": "stop the run that is working",
     "redirect": "stop the current step and give a new direction: /redirect <text>",
     "answer": "answer an open question: /answer <id> <text>",
+    "context": "show how full the context is and when it compacts",
     "cost": "show what this run has spent",
-    "quit": "leave Synthic",
+    "export": "save this run as a Markdown file: /export [file]",
+    "exit": "leave Synthic",
 }
-ALIASES = {"exit": "quit", "clear": "new", "runs": "resume"}
+ALIASES = {"new": "clear", "reset": "clear", "continue": "resume", "runs": "resume", "quit": "exit"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 PICKERS = ("resume", "model", "effort")
 PLACEHOLDER = "Write a task and press Enter, or / for commands"
-KEYS = "Enter sends, / lists the commands, Up recalls a message, Esc interrupts, Ctrl+C twice leaves."
+KEYS = "Enter sends, / lists the commands, Up recalls a message, Esc or Ctrl+C interrupts, Ctrl+C twice leaves."
 RUNS_SHOWN = 30
 QUIT_WINDOW = 2.0
 
@@ -313,11 +315,11 @@ class SynthicApp(App[None]):
             case "help":
                 rows = "\n".join(f"  /{name:<9} {about}" for name, about in COMMANDS.items())
                 self.say(f"Commands\n{rows}\n\n{KEYS}", "quiet")
-            case "quit":
+            case "exit":
                 self.run_action("quit")
-            case "new" | "resume" | "model" | "effort" if self.running():
+            case "clear" | "resume" | "model" | "effort" if self.running():
                 self.say(f"A run is working: /stop it before /{word}.", "note")
-            case "new":
+            case "clear":
                 self.clear()
                 self.welcome()
                 self.refresh_status()
@@ -341,8 +343,39 @@ class SynthicApp(App[None]):
                 self.say(f"/{word} works while a run is working: {COMMANDS[word]}", "note")
             case "cost":
                 self.say(self.cost(), "quiet")
+            case "context":
+                self.say(self.context(), "quiet")
+            case "export":
+                self.export(rest)
             case _:
                 self.say(f"Unknown command /{word}. /help lists the commands.", "bad")
+
+    def context(self) -> str:
+        agent = self.runtime.root_agent if self.runtime is not None else None
+        policy = self.loaded.policy
+        spec = policy.models.get(agent._model) if agent is not None else None
+        if agent is None or spec is None:
+            return "No context yet: no run has started in this conversation."
+        used = agent.context.last_prompt_tokens
+        limit = round(policy.context.compact_at * agent.context.compaction_window(spec))
+        return (
+            f"The last prompt was {used:,} tokens, {used * 100 // max(1, limit)}% of the {limit:,} at which it compacts.\n"
+            f"  The window of {spec.alias} is {spec.context_window:,} tokens."
+        )
+
+    def export(self, name: str) -> None:
+        run_dir = next((path for path in list_runs(self.loaded.policy.journal) if path.name == self.run_id), None)
+        if run_dir is None:
+            self.say("Nothing to export: no run is open.", "quiet")
+            return
+        target = self.cwd / (name or f"synthic-{self.run_id}.md")
+        by_agent = {agent_id: list(read_records(run_dir, agent_id)) for agent_id in sorted(agents_in(run_dir))}
+        try:
+            target.write_text(markdown(run_dir.name, by_agent), encoding="utf-8")
+        except OSError as error:
+            self.say(f"Cannot write {target}: {error}", "bad")
+            return
+        self.say(f"Saved {target}", "quiet")
 
     def cost(self) -> str:
         if self.runtime is None:
@@ -435,7 +468,10 @@ class SynthicApp(App[None]):
             needle = value.strip().lower()
             self.fill_menu([(key, label) for key, label in self.options if needle in label.lower()])
         elif value.startswith("/") and " " not in value:
-            found = [(name, f"/{name:<9} {about}") for name, about in COMMANDS.items() if name.startswith(value[1:])]
+            typed = value[1:]
+            names = [name for name in COMMANDS if name.startswith(typed)]
+            names += [name for alias, name in ALIASES.items() if alias.startswith(typed) and name not in names]
+            found = [(name, f"/{name:<9} {COMMANDS[name]}") for name in names]
             self.menu_mode, self.options = "commands", found
             self.fill_menu(found)
         elif self.menu_mode == "commands":
@@ -484,11 +520,13 @@ class SynthicApp(App[None]):
             self.stop_run()
 
     def action_leave(self) -> None:
-        """Ctrl+C clears the box when it holds text; pressed twice on an empty box it leaves."""
+        """Ctrl+C clears the box when it holds text, else interrupts a working run, else pressed twice it leaves."""
         box = self.query_one("#box", Input)
         now = time.monotonic()
         if box.value:
             box.value = ""
+        elif self.running():
+            self.stop_run()
         elif now - self.leave_at < QUIT_WINDOW:
             self.run_action("quit")
         else:

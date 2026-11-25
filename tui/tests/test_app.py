@@ -148,6 +148,10 @@ def test_a_slash_line_is_a_command_and_never_a_task(world: tuple[Path, Any]) -> 
             assert all(said(app, f"/{name}") for name in COMMANDS)
             await send(pilot, "/cost")
             assert said(app, "Nothing spent")
+            await send(pilot, "/context")
+            assert said(app, "No context yet")
+            await send(pilot, "/export")
+            assert said(app, "Nothing to export")
             assert app.job is None and app.runtime is None
 
     asyncio.run(scenario())
@@ -188,7 +192,7 @@ def test_the_menu_completes_commands_and_picks_a_run_to_continue(world: tuple[Pa
             box, menu = app.query_one("#box", Input), app.query_one("#menu", OptionList)
             box.value = "/re"
             await pilot.pause(0.05)
-            assert menu.display and [menu.get_option_at_index(i).id for i in range(menu.option_count)] == ["resume", "redirect"]
+            assert menu.display and [menu.get_option_at_index(i).id for i in range(menu.option_count)] == ["resume", "redirect", "clear"]
             await pilot.press("tab")
             assert box.value == "/resume "
             await pilot.press("escape")
@@ -205,8 +209,13 @@ def test_the_menu_completes_commands_and_picks_a_run_to_continue(world: tuple[Pa
             await send(pilot, "more")
             await settle(app, pilot)
             assert app.run_id == first and said(app, "More on the first.")
+            await send(pilot, "/context")
+            assert said(app, "% of the 170,000 at which it compacts")
+            await send(pilot, "/export out.md")
+            page = (project / "out.md").read_text(encoding="utf-8")
+            assert page.startswith(f"# Run {first}") and "More on the first." in page
             await pilot.press("up")
-            assert box.value == "more"
+            assert box.value == "/export out.md"
 
     asyncio.run(scenario())
     assert not provider.script

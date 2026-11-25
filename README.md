@@ -54,8 +54,8 @@ To work on one screen instead, as in other coding agents:
 synthic tui
 ```
 
-Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/new`, `/stop`,
-`/help`), Esc interrupts the agent, Ctrl+C twice leaves.
+Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/context`,
+`/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves.
 
 ```text
 Command                          What it does
