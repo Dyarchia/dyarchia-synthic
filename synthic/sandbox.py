@@ -23,7 +23,7 @@ The container:
   ``docker.mounts`` read-only. Nothing else of the host is visible.
 * Environment: only ``environment.env`` and the host variables named in
   ``docker.pass_env``, passed as ``-e NAME`` so no value appears on a command
-  line. ``ANTHROPIC_API_KEY`` is refused by the policy in this mode.
+  line. ``SYNTHIC_ANTHROPIC_API_KEY`` and ``ANTHROPIC_API_KEY`` are refused by the policy in this mode.
 * Network: on or off (``--network none``). An allow-list of domains needs a
   filtering proxy, which Docker does not provide, so there is none.
 

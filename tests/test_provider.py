@@ -632,5 +632,37 @@ def test_the_registry_is_not_read_outside_windows(monkeypatch: pytest.MonkeyPatc
 
 
 def test_the_missing_key_message_says_where_it_looks_and_how_to_set_it() -> None:
-    assert "HKEY_CURRENT_USER\\Environment" in KEY_MISSING and "setx ANTHROPIC_API_KEY" in KEY_MISSING
-    assert "export ANTHROPIC_API_KEY" in KEY_MISSING and "\n" not in KEY_MISSING
+    assert "HKEY_CURRENT_USER\\Environment" in KEY_MISSING and "setx SYNTHIC_ANTHROPIC_API_KEY" in KEY_MISSING
+    assert "export SYNTHIC_ANTHROPIC_API_KEY" in KEY_MISSING and "\n" not in KEY_MISSING
+    assert KEY_MISSING.index("SYNTHIC_ANTHROPIC_API_KEY") < KEY_MISSING.index(" ANTHROPIC_API_KEY")
+
+
+@pytest.mark.parametrize(
+    ("process", "stored", "expected"),
+    [
+        ({"SYNTHIC_ANTHROPIC_API_KEY": "own-env", "ANTHROPIC_API_KEY": "shared-env"}, {"SYNTHIC_ANTHROPIC_API_KEY": "own-reg"}, "own-env"),
+        ({"ANTHROPIC_API_KEY": "shared-env"}, {"SYNTHIC_ANTHROPIC_API_KEY": "own-reg"}, "own-reg"),
+        ({}, {"SYNTHIC_ANTHROPIC_API_KEY": "own-reg", "ANTHROPIC_API_KEY": "shared-reg"}, "own-reg"),
+        ({"ANTHROPIC_API_KEY": "shared-env"}, {"ANTHROPIC_API_KEY": "shared-reg"}, "shared-env"),
+        ({}, {"ANTHROPIC_API_KEY": "shared-reg"}, "shared-reg"),
+        ({"SYNTHIC_ANTHROPIC_API_KEY": "own-env"}, {}, "own-env"),
+    ],
+    ids=["own-env", "own-registry-over-shared-env", "own-registry-over-shared-registry", "shared-env", "shared-registry", "own-alone"],
+)
+def test_the_key_of_its_own_wins_and_the_process_environment_wins_within_a_name(
+    monkeypatch: pytest.MonkeyPatch, process: dict[str, str], stored: dict[str, str], expected: str
+) -> None:
+    for name, value in process.items():
+        monkeypatch.setenv(name, value)
+    fake_registry(monkeypatch, stored)
+    assert find_api_key() == expected
+
+
+def test_the_provider_sends_the_key_of_its_own_and_children_never_get_either(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SYNTHIC_ANTHROPIC_API_KEY", "own-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "shared-key")
+    server = Server(ok())
+    provider, _ = make(server, api_key=None)
+    run(provider.complete(request()))
+    assert server.requests[0].headers["x-api-key"] == "own-key"
+    assert not {"SYNTHIC_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"} & {key.upper() for key in proc.base_env()}

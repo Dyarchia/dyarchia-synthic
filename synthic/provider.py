@@ -24,14 +24,14 @@ from typing import Any
 
 import httpx
 
-from synthic.types import Block, Message, ModelReply, ModelRequest, ModelSpec, ProviderError, Usage
+from synthic.types import KEY_VARIABLES, Block, Message, ModelReply, ModelRequest, ModelSpec, ProviderError, Usage
 
 API_VERSION = "2026-10-21"
-KEY_VARIABLE = "ANTHROPIC_API_KEY"
 KEY_MISSING = (
-    f"{KEY_VARIABLE} is not set. It is read from the process environment and, on Windows, from the user environment "
-    f"(HKEY_CURRENT_USER\\Environment). Set it with `setx {KEY_VARIABLE} <your-key>` on Windows, then open a new "
-    f"terminal, or with `export {KEY_VARIABLE}=<your-key>` elsewhere."
+    "No API key found. Synthic reads SYNTHIC_ANTHROPIC_API_KEY first and ANTHROPIC_API_KEY second, each from the "
+    "process environment and, on Windows, from the user environment (HKEY_CURRENT_USER\\Environment). Set it with "
+    "`setx SYNTHIC_ANTHROPIC_API_KEY <your-key>` on Windows, then open a new terminal, or with "
+    "`export SYNTHIC_ANTHROPIC_API_KEY=<your-key>` elsewhere."
 )
 
 CACHEABLE_BLOCKS = frozenset({"text", "image", "document", "tool_use", "tool_result"})
@@ -429,13 +429,20 @@ def _registry_value(name: str) -> str | None:
 
 
 def find_api_key() -> str | None:
-    """The API key: the process environment first, then the user environment in the registry on Windows.
+    """The API key: ``SYNTHIC_ANTHROPIC_API_KEY``, then ``ANTHROPIC_API_KEY``. For each name the process environment
+    comes first and the user environment in the registry on Windows second.
+
+    A name of its own keeps the key apart from the one Claude Code reads, which makes it bill the API and not a
+    subscription.
 
     A terminal started by an application that was already running when the variable was created does not
     have it in its environment, though ``setx`` stored it. The value is only returned: it is never put into
     ``os.environ``, so the commands the agent runs (``proc.base_env``) cannot see it, and never printed.
     """
-    return os.environ.get(KEY_VARIABLE) or _registry_value(KEY_VARIABLE)
+    for name in KEY_VARIABLES:
+        if value := os.environ.get(name) or _registry_value(name):
+            return value
+    return None
 
 
 class AnthropicProvider:

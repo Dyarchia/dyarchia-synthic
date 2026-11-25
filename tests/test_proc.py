@@ -231,6 +231,8 @@ def test_api_key_is_withheld_unless_set_explicitly(monkeypatch: pytest.MonkeyPat
     assert proc.base_env()["SYNTHIC_OTHER"] == "kept"
     assert "ANTHROPIC_API_KEY" not in proc.merged_env({})
     assert proc.merged_env({"ANTHROPIC_API_KEY": "explicit"})["ANTHROPIC_API_KEY"] == "explicit"
+    monkeypatch.setenv("synthic_anthropic_api_key", "own-key")
+    assert "synthic_anthropic_api_key" not in proc.base_env()
 
 
 def test_explicit_shell_is_used_and_described() -> None:

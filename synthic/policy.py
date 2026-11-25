@@ -84,6 +84,7 @@ from typing import Any
 from .schema import problems as schema_problems
 from .types import (
     EVENTS,
+    KEY_VARIABLES,
     AgentLimits,
     Budget,
     CheckpointSettings,
@@ -712,10 +713,10 @@ def _docker_problems(environment: dict[str, Any]) -> list[str]:
     for path in [docker.get("workdir", "/workspace"), *docker.get("mounts", {})]:
         if not path.startswith("/"):
             found.append(f"environment.docker: the container path {path!r} must be absolute")
-    secret = "ANTHROPIC_API_KEY"
-    if any(name.upper() == secret for name in docker.get("pass_env", [])):
+    secret = " or ".join(KEY_VARIABLES)
+    if any(name.upper() in KEY_VARIABLES for name in docker.get("pass_env", [])):
         found.append(f"environment.docker.pass_env must not name {secret}: the container never gets the engine's key")
-    if any(name.upper() == secret for name in environment.get("env", {})):
+    if any(name.upper() in KEY_VARIABLES for name in environment.get("env", {})):
         found.append(f'environment.env must not set {secret} when environment.mode = "docker"')
     return found
 

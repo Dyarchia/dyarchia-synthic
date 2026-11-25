@@ -130,7 +130,7 @@ timeout_seconds = 600
 [instructions]
 files = []
 repo_files = ["AGENTS.md", "CLAUDE.md"]
-load_repo_files = false
+load_repo_files = true
 
 [plugins]
 skills = []

@@ -53,6 +53,9 @@ def test_the_engine_key_never_reaches_the_container(tmp_path: Path) -> None:
     with pytest.raises(PolicyError) as error:
         make_policy(tmp_path, task)
     assert sum("ANTHROPIC_API_KEY" in p for p in error.value.problems) == 2
+    with pytest.raises(PolicyError) as error:
+        make_policy(tmp_path, docker_task(tmp_path / "state", pass_env=["synthic_anthropic_api_key"]))
+    assert sum("SYNTHIC_ANTHROPIC_API_KEY" in p for p in error.value.problems) == 1
     with pytest.raises(PolicyError):
         make_policy(tmp_path, docker_task(tmp_path / "state", workdir="relative"))
 

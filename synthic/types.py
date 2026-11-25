@@ -28,6 +28,8 @@ from typing import Any, Literal, Protocol
 Block = dict[str, Any]
 Message = dict[str, Any]
 Decision = Literal["allow", "ask", "deny"]
+KEY_VARIABLES = ("SYNTHIC_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+"""The variables that hold the engine's API key, the one looked for first coming first. Children never get them."""
 
 
 @dataclass(frozen=True)
@@ -533,7 +535,7 @@ class InstructionSettings:
 
     files: tuple[str, ...] = ()
     repo_files: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
-    load_repo_files: bool = False
+    load_repo_files: bool = True
 
 
 @dataclass(frozen=True)

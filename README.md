@@ -28,12 +28,14 @@ No Python needed.
 2. Save your Anthropic API key (get one at console.anthropic.com):
 
     ```powershell
-    setx ANTHROPIC_API_KEY "paste-your-key-here"
+    setx SYNTHIC_ANTHROPIC_API_KEY "paste-your-key-here"
     ```
 
-    Synthic reads `ANTHROPIC_API_KEY` from the environment of the terminal and, on Windows, from your user
-    environment in the registry, so a terminal opened by an app that started before this step still finds it.
-    The agent's own commands never see it.
+    Synthic reads `SYNTHIC_ANTHROPIC_API_KEY` first and `ANTHROPIC_API_KEY` second, each from the environment of
+    the terminal and, on Windows, from your user environment in the registry, so a terminal opened by an app that
+    started before this step still finds it. The name of its own keeps the key away from Claude Code, which reads
+    `ANTHROPIC_API_KEY` and then bills the API instead of your subscription. The agent's own commands never see
+    either variable.
 
 3. Close the terminal, open a new one, and check:
 
@@ -58,23 +60,24 @@ To work on one screen instead, as in other coding agents, type it alone:
 synthic
 ```
 
-Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`,
-`/context`, `/export`, `/help`), Esc interrupts the agent, and typing `exit` or `quit` leaves while nothing is
-working. Ctrl+C clears the message box, closes a menu and stops a working run; pressed a second time within two
-seconds it leaves in every state, ending the agents' shells with it. Ctrl+D does the same only when the box is
-empty (with text it deletes the character to the right). `/help` lists every command and key; it scrolls with
-Up, Down, PageUp, PageDown and the mouse wheel, and Esc closes it.
+The screen starts with only its name, version and working folder. Write a task and press Enter. `/` lists the
+commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`, `/context`, `/export`, `/help`), Esc interrupts the
+agent, and typing `exit` or `quit` leaves while nothing is working. Ctrl+C clears the message box, closes a menu and
+stops a working run; pressed a second time within two seconds it leaves in every state, ending the agents' shells
+with it. Ctrl+D does the same only when the box is empty (with text it deletes the character to the right). `/help`
+lists every command and key; it scrolls with Up, Down, PageUp, PageDown and the mouse wheel, and Esc closes it.
 
 The screen needs a real terminal: PowerShell, cmd, Windows Terminal, or Git Bash through `winpty synthic`.
 Where standard input or output is a pipe it stops with a message instead of starting.
 
 Here a person is at the terminal (`human.present`): the agent answers a greeting or a question in prose and
-waits for your next message, and when it asks you something it waits, and what you type is the answer.
+waits for your next message, and when it asks you something it waits, and what you type is the answer (with
+several questions open, `/answer <id> <text>` says which one).
 
-The tabs at the top draw the same run in four ways, and Ctrl+T moves through them: `Column` (one
-conversation), `Panes` (agents, conversation, and the full text of a step), `Fleet` (the agents side by
-side) and `Ledger` (one row per step, with time and cost). Shift+Up and Shift+Down change the agent you
-talk to; Ctrl+Up and Ctrl+Down move the selected step.
+The tabs in the status line, under the message box, draw the same run in four ways. Click one, or press Ctrl+T to
+move through them: `Column` (one conversation), `Panes` (agents, conversation, and the full text of a step), `Fleet`
+(the agents side by side) and `Ledger` (one row per step, with time and cost). Shift+Up and Shift+Down change the
+agent you talk to; Ctrl+Up and Ctrl+Down move the selected step.
 
 ```text
 Command                          What it does

@@ -51,6 +51,7 @@ def test_factory_defaults_load_cleanly() -> None:
     assert p.human.wait_seconds == 0.0 and isinstance(p.human.wait_seconds, float)
     assert p.environment.tool_timeout_seconds == 120.0
     assert p.instructions.repo_files == ("AGENTS.md", "CLAUDE.md")
+    assert p.instructions.load_repo_files is True
     assert p.budget.dollars is None
     assert loaded.sources["role.build.model"] == "defaults"
 

@@ -636,7 +636,7 @@ def test_a_summary_whose_reread_fails_is_used_as_it_was(tmp_path: Path) -> None:
 def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     folder = project(tmp_path)
     (folder / "AGENTS.md").write_text("Repo says hi.", encoding="utf-8")
-    rules = {"permissions": {"sh: git push*": "deny"}, "budget": {"dollars": 2}}
+    rules = {"permissions": {"sh: git push*": "deny"}, "budget": {"dollars": 2}, "instructions": {"load_repo_files": False}}
     policy = make_policy(tmp_path, rules).policy
     role = policy.roles["lead"]
     tools = ["done", "ask", "receipt", "sh", "job", "edit", "spawn", "agent"]
@@ -651,7 +651,8 @@ def test_system_prompt_is_short_fixed_and_shows_limits(tmp_path: Path) -> None:
     assert f"Working folder: {folder}\n" in "".join(texts)
     assert "Repo says hi." not in "".join(texts)
     assert "Denied: sh: git push*" in texts[-1] and "$2.00 in total" in texts[-1] and "may spawn: worker" in texts[-1]
-    opened = make_policy(tmp_path, {**rules, "instructions": {"load_repo_files": True}}).policy
+    opened = make_policy(tmp_path, {**rules, "instructions": {}}).policy
+    assert opened.instructions.load_repo_files
     wrapped = build_system(opened, role, folder, tools)
     assert any("comes from the repository" in t and "Repo says hi." in t for t in wrapped)
     hidden = make_policy(tmp_path, {"visible_to_agent": False}).policy

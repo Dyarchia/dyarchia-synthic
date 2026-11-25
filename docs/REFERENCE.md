@@ -55,6 +55,13 @@ to `false` wins) the root agent's prose turn ends as status `replied`, its text 
 waits for the next message (`resume` with a text, exit code 0). `ask` and a permission rule `ask` then wait
 for the answer with no time limit, whatever `wait_seconds` says. Spawned agents are never waited on for prose.
 
+`[instructions]` lists `files` of your own (always loaded) and `repo_files` (default `AGENTS.md` and `CLAUDE.md`,
+looked for in the working folder). The repository's files load by default (`load_repo_files = true`), marked in
+the prompt as written by the repository's authors, so the rules above them win where they disagree; set
+`load_repo_files = false` to turn them off. In the terminal interface `/instructions` shows the files that would
+load and `/instructions on|off` switches the key for the session, from the next run. From the shell, use
+`--set instructions.load_repo_files=false` on `run`, `resume` or `tui`.
+
 Four levels, from most to least authority, over the packaged defaults:
 
 ```text
@@ -230,7 +237,7 @@ mounts = { "/ref" = "C:/data/reference" }
 - Mounts: the project read-write at `workdir` (`/workspace`), the memory folder at `/synthic/memory` when memory
   is on, and each of `mounts` read-only. Nothing else of the host is visible. The image needs `sh`.
 - Environment: only `environment.env` and the host variables named in `pass_env`, given as `-e NAME` so no value
-  is on a command line. `ANTHROPIC_API_KEY` is refused in this mode.
+  is on a command line. `SYNTHIC_ANTHROPIC_API_KEY` and `ANTHROPIC_API_KEY` are refused in this mode.
 - Network: `network = true` (default) or `false` (`--network none`). There is no list of allowed domains: Docker
   cannot filter by domain without a proxy, which Synthic does not ship.
 - Lifetime: started in the background when the run starts, removed with `docker rm -f` when it ends. If the

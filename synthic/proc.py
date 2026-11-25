@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from .types import EnvironmentSettings
+from .types import KEY_VARIABLES, EnvironmentSettings
 
 IS_WINDOWS = sys.platform == "win32"
 KILL_GRACE_SECONDS = 2.0
@@ -365,7 +365,7 @@ async def start_argv(
 
 
 def base_env() -> dict[str, str]:
-    """``os.environ`` without the engine's own ``ANTHROPIC_API_KEY``.
+    """``os.environ`` without the engine's own key (``SYNTHIC_ANTHROPIC_API_KEY`` and ``ANTHROPIC_API_KEY``).
 
     Every child the engine starts (shell commands, MCP servers, hooks) begins
     from this, because those children run what the model or a plugin decided and
@@ -373,7 +373,7 @@ def base_env() -> dict[str, str]:
     child only when the policy's ``environment.env``, or a server's or hook's
     own ``env``, sets it explicitly.
     """
-    return {key: value for key, value in os.environ.items() if key.upper() != "ANTHROPIC_API_KEY"}
+    return {key: value for key, value in os.environ.items() if key.upper() not in KEY_VARIABLES}
 
 
 def merged_env(overlay: Mapping[str, str]) -> dict[str, str]:
