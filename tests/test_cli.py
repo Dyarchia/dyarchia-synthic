@@ -503,7 +503,7 @@ def test_remote_answer_resolves_a_waiting_question(setup: Setup, capsys: pytest.
     out = capsys.readouterr().out
     assert code == 0 and "? question root-q1: Which file?" in out and "= answered root-q1" in out
     assert "root-q1  (root): Which file?" in out
-    assert "The human answered: use file B" in str(provider.requests[1].messages[-1])
+    assert re.search(r"The human answered after \d+ s: use file B", str(provider.requests[1].messages[-1]))
     assert main(["questions", run_id, *setup.opts]) == 0
     assert "No open questions." in capsys.readouterr().out
 
@@ -732,3 +732,13 @@ def test_synthic_alone_opens_the_interface_and_a_mistyped_command_is_never_a_tas
     assert interactive(["run", "a task"]) == ["run", "a task"]
     assert interactive(["shwo"]) == ["shwo"] and main(["shwo"]) == 2
     assert interactive(["--version"]) == ["--version"] and interactive(["-h"]) == ["-h"]
+
+
+def test_a_replied_run_exits_zero_and_continues_with_resume(setup: Setup, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = run_cli(setup, [reply(text("Hello there."))], "--set", "human.present=true", task="hello")
+    out = capsys.readouterr().out
+    assert code == 0 and "status: replied" in out and "summary: Hello there." in out
+    run_id = run_id_of(out)
+    provider = ScriptedProvider([done("Finished.")])
+    assert main(["resume", run_id, "now finish", *setup.opts, "--set", "human.present=true"], provider_factory=lambda: provider) == 0
+    assert "status: delivered" in capsys.readouterr().out

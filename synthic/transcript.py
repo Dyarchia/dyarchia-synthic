@@ -134,7 +134,7 @@ def entries(records: Iterable[Record]) -> Iterator[Entry]:
             case "thinking_dropped":
                 yield Entry("note", "the API rejected earlier thinking; it was dropped", ts=record.ts)
             case "done":
-                failed = data.get("status") != "delivered"
+                failed = data.get("status") not in ("delivered", "replied")
                 yield Entry("end", str(data.get("status")), str(data.get("summary", "")), failed, record.ts)
 
 

@@ -278,16 +278,20 @@ class AgentTool:
         limit = ctx.timeout_seconds
         if isinstance(seconds, int | float) and not isinstance(seconds, bool) and seconds >= 0:
             limit = float(seconds)
+        started = time.monotonic()
         if not any(h.done.is_set() and (h is handle or not h.reported) for h in targets):
             await self._agent.wait_for(*(h.done.wait() for h in targets), timeout=limit)
+        waited = f"after {time.monotonic() - started:.0f} s"
         ended = [h for h in targets if h.done.is_set() and (h is handle or not h.reported)]
         for h in ended:
             h.reported = True
         if ended:
-            return ToolOutput("\n\n".join(h.notice() for h in ended))
+            return ToolOutput("\n\n".join(h.notice() for h in ended) + f"\n(waited {waited})")
+        if all(h.done.is_set() for h in targets):
+            return ToolOutput("No child is running: every result was already delivered to you.")
         running = "\n".join(h.line() for h in targets)
         why = "interrupted" if ctx.cancel.is_set() else "a message arrived" if self._agent.has_news() else "time is up"
-        return ToolOutput(f"Still running ({why}):\n{running}")
+        return ToolOutput(f"Still running ({why}, {waited}):\n{running}")
 
 
 class Runtime:

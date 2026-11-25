@@ -10,7 +10,7 @@ synthic run "Add a --verbose flag to cli.py" --cwd path/to/repo
 ```
 
 `synthic run` never prompts and does not read stdin unless it is a terminal. The task can also come from
-`--task-file FILE` or from stdin with `-`. Exit codes: 0 delivered, 1 failed, 2 usage or policy error,
+`--task-file FILE` or from stdin with `-`. Exit codes: 0 delivered or replied, 1 failed, 2 usage or policy error,
 3 budget, 130 stopped. `--quiet` prints only the final summary, `--json` prints one JSON object per
 event, and the last one is the result.
 
@@ -37,6 +37,7 @@ dollars = 5.0
 wall_clock_hours = 4
 
 [human]
+present = false
 wait_seconds = 300
 
 [provider]
@@ -46,6 +47,13 @@ retry_seconds = 1800
 "sh: git push*" = "deny"
 "edit: .github/*" = "ask"
 ```
+
+`[human]` says what happens where a person would be needed. By default nobody is there: `ask` returns at once
+(after `wait_seconds`, if set) with the agent's assumption, and a prose turn is nudged until the agent calls `done`.
+With `present = true` (the terminal interface starts from it, under every policy file, so a file that sets it
+to `false` wins) the root agent's prose turn ends as status `replied`, its text being the summary, and the run
+waits for the next message (`resume` with a text, exit code 0). `ask` and a permission rule `ask` then wait
+for the answer with no time limit, whatever `wait_seconds` says. Spawned agents are never waited on for prose.
 
 Four levels, from most to least authority, over the packaged defaults:
 
@@ -302,7 +310,7 @@ synthic resume [run-id] "now also update the docs"
 ```
 
 `resume` continues a run that was stopped or cut by a crash, with the same options and interrupts as
-`run`. A run that ended (delivered, failed or budget) is continued only when you give a text, which
+`run`. A run that ended (delivered, replied, failed or budget) is continued only when you give a text, which
 enters as a new message from you; without one it just shows its recorded result. Giving the next task this way
 keeps one session and lets the engine compact the finished task (see Context and memory). The run id may be
 omitted (the most recent run is used); a word shaped like a run id that matches no run is an error, not

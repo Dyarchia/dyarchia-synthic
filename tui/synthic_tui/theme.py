@@ -76,6 +76,7 @@ STATES = {
     "queued": ("○", "sky"),
     "review": ("●", "nebula"),
     "delivered": ("✓", "moss"),
+    "replied": ("○", "ink-muted"),
     "idle": ("○", "ink-muted"),
 }
 """The glyph and the colour of each state; any other state is a failure and reads in ``down``."""

@@ -94,7 +94,7 @@ from .types import (
 if TYPE_CHECKING:
     from .agents import ChildHandle, Runtime
 
-Status = Literal["delivered", "failed", "budget", "stopped", "cancelled"]
+Status = Literal["delivered", "replied", "failed", "budget", "stopped", "cancelled"]
 
 ENGINE_TOOLS = frozenset({"done", "ask", "receipt"})
 """Tools every agent has whatever its role says; ``spawn_role`` never removes them."""
@@ -259,6 +259,10 @@ class _AskTool:
         "without an answer. Usually nobody answers at once: continue on your assumption; a later answer arrives "
         "as a message."
     )
+    description_present = (
+        "Ask the human about a decision that only the human can make. The call waits for the answer. Give the "
+        "`assumption` you would act on, so the human can accept it in a word."
+    )
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {"question": {"type": "string"}, "assumption": {"type": "string"}},
@@ -267,6 +271,8 @@ class _AskTool:
 
     def __init__(self, agent: Agent) -> None:
         self._agent = agent
+        if agent.policy.human.present:
+            self.description = self.description_present
 
     def resource(self, tool_input: dict[str, Any], ctx: ToolContext) -> str | None:
         return None
@@ -1115,8 +1121,11 @@ class Agent:
         """The model ended its turn without calling a tool.
 
         With children running this is a parent waiting for them: it sleeps
-        until something arrives. Otherwise it is reminded once to continue or
-        call ``done``; a second time in a row ends the agent as ``failed``.
+        until something arrives. With a person present (``human.present``) the
+        root agent's words are its answer: the turn ends as ``replied`` and the
+        person's next message continues the run. Otherwise it is reminded once
+        to continue or call ``done``; a second time in a row ends the agent as
+        ``failed``.
         Messages held during a server tool call that entered with this reply
         (``released``, see ``Context.add_user``) are news as well.
         """
@@ -1126,9 +1135,12 @@ class Agent:
             while not self.has_news() and not self._cancel.is_set():
                 await self.wait_for()
             return
+        last = " ".join(b["text"] for b in reply.content if b.get("type") == "text").strip()
+        if last and self.parent_id is None and self.policy.human.present:
+            self._finish = ("replied", last)
+            return
         self._idle_turns += 1
         if self._idle_turns > 1:
-            last = " ".join(b["text"] for b in reply.content if b.get("type") == "text").strip()
             self._finish = ("failed", "Ended its turn twice without calling done." + (f" Last words: {last}" if last else ""))
             return
         self._add_user("[You ended your turn without calling a tool. Continue the task, or call `done` if it is finished.]", "engine")
@@ -1258,9 +1270,9 @@ class Agent:
     async def _permission(self, call: ToolCall, target: str, how: str) -> tuple[Decision, str]:
         """Resolve an ``ask`` rule through ``policy.human``: wait for a yes or no, else the fallback."""
         human = self.policy.human
-        if human.wait_seconds > 0:
+        if human.present or human.wait_seconds > 0:
             question = self._open("permission", f"Allow {' '.join(filter(None, (call.name, target)))}?", "")
-            answer = await self._await(question, human.wait_seconds)
+            answer = await self._await(question, self._patience())
             self.runtime.close_question(question.id)
             if self._cancel.is_set():
                 return "deny", "an interrupt (the agent was stopped while waiting for approval)"
@@ -1275,8 +1287,13 @@ class Agent:
         self.runtime.output(self.id, "question", f"{question.id}: {text}")
         return question
 
-    async def _await(self, question: Question, seconds: float) -> str | None:
-        """Wait for an answer, at most ``seconds`` and never past an interrupt."""
+    def _patience(self) -> float | None:
+        """How long a question waits: for ever while a person is present, else ``human.wait_seconds``."""
+        human = self.policy.human
+        return None if human.present else human.wait_seconds
+
+    async def _await(self, question: Question, seconds: float | None) -> str | None:
+        """Wait for an answer, at most ``seconds`` (no limit for ``None``) and never past an interrupt."""
         question.waiting = True
         try:
             await wait_any(asyncio.shield(question.future), self._cancel.wait(), timeout=seconds)
@@ -1401,19 +1418,22 @@ class Agent:
         self.journal.append("question", {"question_id": question.id, "text": text, "assumption": assumption})
         await self._emit("question", question_id=question.id, text=text, assumption=assumption)
         human = self.policy.human
-        if human.wait_seconds > 0:
-            answer = await self._await(question, human.wait_seconds)
+        waited = ""
+        if human.present or human.wait_seconds > 0:
+            started = time.monotonic()
+            answer = await self._await(question, self._patience())
+            waited = f" after {time.monotonic() - started:.0f} s"
             if answer is not None:
                 self.runtime.close_question(question.id)
-                return ToolOutput(f"The human answered: {answer}")
+                return ToolOutput(f"The human answered{waited}: {answer}")
             if self._cancel.is_set():
-                return ToolOutput(f"Interrupted while waiting for an answer to {question.id}.", is_error=True)
+                return ToolOutput(f"Interrupted{waited} while waiting for an answer to {question.id}.", is_error=True)
         if human.question_fallback == "stop":
             self._finish = ("stopped", f"Stopped on a question for the human ({question.id}): {text}")
-            return ToolOutput("No answer. The rules say to stop here.")
+            return ToolOutput(f"No answer{waited}. The rules say to stop here.")
         return ToolOutput(
-            f"No answer now ({question.id}). Proceed on your assumption: {assumption}. "
-            "If the human answers later, the answer arrives as a message."
+            f"No answer {'now' if not waited else waited.strip()} ({question.id}). Proceed on your assumption: "
+            f"{assumption}. If the human answers later, the answer arrives as a message."
         )
 
     async def _cancel_children(self) -> None:

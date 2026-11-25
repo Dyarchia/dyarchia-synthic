@@ -337,8 +337,14 @@ class HumanPolicy:
     and a question from the agent is answered by ``question_fallback``
     (``"assume"``: go on with the stated assumption, ``"stop"``: end the agent).
     A human answer that arrives later is delivered as a message.
+
+    ``present`` says a person sits at the terminal (the interface sets it). Then
+    a turn of the root agent that ends in prose ends the run's turn as ``replied``
+    instead of being nudged, and ``ask`` and a permission that resolves to ``ask``
+    wait for the answer with no time limit, whatever ``wait_seconds`` says.
     """
 
+    present: bool = False
     wait_seconds: float = 0.0
     permission_fallback: Literal["allow", "deny"] = "deny"
     question_fallback: Literal["assume", "stop"] = "assume"
@@ -620,7 +626,8 @@ class Record:
       returns to the agent as the error result of its ``done``; ``reviewer`` is
       the id of the reviewer agent, or ``None``
     * ``done``: ``{status, summary}`` with status ``delivered``, ``failed``,
-      ``budget``, ``stopped`` or ``cancelled``
+      ``budget``, ``stopped``, ``cancelled`` or ``replied`` (a root agent spoke and waits for the person,
+      ``human.present``)
     * ``resume``: ``{}`` a new process took the agent up again (after a crash or
       after a ``done``). A ``done`` is in force only while no ``resume`` follows
       it (``journal.ended``); the time before a ``resume`` since the previous

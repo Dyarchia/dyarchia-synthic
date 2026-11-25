@@ -220,7 +220,8 @@ class Board:
     def ended(self, status: str, summary: str) -> None:
         """The run ended: the root has no ``agent_end`` step of its own, its delivery is written here."""
         self._close(ROOT)
-        self._add(ROOT, "end", summary, result=status, error=status != "delivered")
+        if status != "replied":
+            self._add(ROOT, "end", summary, result=status, error=status != "delivered")
         for view in self.agents.values():
             if view.state in LIVE:
                 self._state(view, status if view.id == ROOT else "stopped")
@@ -266,6 +267,8 @@ class Board:
                         agent_id, "tool", entry.text, ts, name=entry.name, input=entry.input, detail=entry.detail,
                         result=result, error=entry.error, seconds=entry.seconds, cost=cost, fetched=True,
                     )
+                case "end" if entry.text == "replied":
+                    view.state, step = entry.text, view.steps[-1]
                 case "end":
                     step = self._add(agent_id, "end", entry.detail, ts, result=entry.text, error=entry.error, cost=cost)
                     view.state = entry.text

@@ -207,6 +207,7 @@ _SCHEMA: dict[str, Any] = {
     },
     "agents": {"concurrent": "int", "depth": "int", "repeat_limit": "int"},
     "human": {
+        "present": "bool",
         "wait_seconds": "number",
         "permission_fallback": ("allow", "deny"),
         "question_fallback": ("assume", "stop"),
@@ -855,8 +856,12 @@ def load_policy(
     trust_project: bool = False,
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
+    defaults: dict[str, Any] | None = None,
 ) -> LoadedPolicy:
     """Read every level from disk and merge them. ``env`` and ``home`` default to the real ones.
+
+    ``defaults`` goes over the packaged defaults and under every file: an interface's own starting
+    values (``human.present``), which any policy file still overrides.
 
     ``task_overrides`` is a nested dict shaped like the file
     (``{"role": {"build": {"model": "sonnet"}}}``) and wins over ``task_file``.
@@ -868,7 +873,7 @@ def load_policy(
     home = Path.home() if home is None else home
     problems: list[str] = []
     warnings: list[str] = []
-    levels = [Level("defaults", factory_defaults(), True, "defaults.toml")]
+    levels = [Level("defaults", deep_merge(factory_defaults(), defaults or {}), True, "defaults.toml")]
 
     if org := env.get("SYNTHIC_ORG_POLICY"):
         if (data := _read_toml(Path(org), problems, "organization")) is not None:

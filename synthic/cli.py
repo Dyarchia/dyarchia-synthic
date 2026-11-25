@@ -43,6 +43,7 @@ from .loop import AgentResult
 from .media import MediaError
 from .media import load as load_media
 from .policy import LoadedPolicy, PolicyError, deep_merge, load_policy
+from .provider import KEY_MISSING, find_api_key
 from .tools.todo import render as render_todo
 from .tools.todo import tally as tally_todo
 from .transcript import markdown, tool_line
@@ -51,9 +52,12 @@ from .types import Attachment, Provider, Record, Usage
 CONTROL_FILE = "control.jsonl"
 POLL_SECONDS = 0.5
 RUN_ID_SHAPE = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}")
-EXIT_CODES = {"delivered": 0, "failed": 1, "budget": 3, "stopped": 130, "cancelled": 1}
+EXIT_CODES = {"delivered": 0, "replied": 0, "failed": 1, "budget": 3, "stopped": 130, "cancelled": 1}
 ANSI = {"dim": "2", "red": "31", "green": "32", "yellow": "33"}
-STATUS_COLOR = {"delivered": "green", "failed": "red", "budget": "yellow", "stopped": "yellow"}
+STATUS_COLOR = {"delivered": "green", "replied": "green", "failed": "red", "budget": "yellow", "stopped": "yellow"}
+
+TUI_DEFAULTS = {"human": {"present": True}}
+"""What the terminal interface assumes before any policy file speaks: a person is at the terminal."""
 
 ProviderFactory = Callable[[], Provider]
 
@@ -106,8 +110,11 @@ def synthic_home() -> Path:
     return Path(raw) if raw else Path.home()
 
 
-def load(args: argparse.Namespace, extra: dict[str, Any] | None = None) -> tuple[Path, LoadedPolicy]:
-    """The policy in force for ``args``; ``extra`` goes over the ``--set`` values, as an interface's own choices."""
+def load(
+    args: argparse.Namespace, extra: dict[str, Any] | None = None, defaults: dict[str, Any] | None = None
+) -> tuple[Path, LoadedPolicy]:
+    """The policy in force for ``args``; ``extra`` goes over the ``--set`` values, as an interface's own choices,
+    and ``defaults`` under every policy file, as its starting values."""
     folder = Path(args.cwd or Path.cwd()).resolve()
     if not folder.is_dir():
         raise CliError(f"--cwd {folder} is not a folder")
@@ -118,6 +125,7 @@ def load(args: argparse.Namespace, extra: dict[str, Any] | None = None) -> tuple
         overrides or None,
         args.trust_project,
         home=synthic_home(),
+        defaults=defaults,
     )
     return folder, loaded
 
@@ -522,8 +530,8 @@ def read_task(args: argparse.Namespace) -> tuple[str, bool]:
 
 
 def require_key(factory: ProviderFactory | None) -> None:
-    if factory is None and not os.environ.get("ANTHROPIC_API_KEY"):
-        raise CliError("ANTHROPIC_API_KEY is not set: set it in the environment before starting a run")
+    if factory is None and not find_api_key():
+        raise CliError(KEY_MISSING)
 
 
 def printer_for(args: argparse.Namespace) -> Printer:
@@ -564,7 +572,7 @@ def cmd_tui(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
         raise CliError("the terminal interface is not installed: install the synthic-tui package") from None
     cwd, _ = load(args)
     require_key(factory)
-    return run(cwd, lambda extra=None: load(args, extra)[1], factory, " ".join(args.task))
+    return run(cwd, lambda extra=None: load(args, extra, TUI_DEFAULTS)[1], factory, " ".join(args.task))
 
 
 def cmd_resume(args: argparse.Namespace, factory: ProviderFactory | None) -> int:

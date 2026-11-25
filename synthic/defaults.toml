@@ -75,6 +75,7 @@ depth = 2
 repeat_limit = 3
 
 [human]
+present = false
 wait_seconds = 0
 permission_fallback = "deny"
 question_fallback = "assume"

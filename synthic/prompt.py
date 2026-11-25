@@ -21,12 +21,25 @@ from .proc import describe_shell
 from .types import Policy, Role
 
 
-def _preamble(policy: Policy, cwd: Path, tools: Collection[str], sandbox: Any) -> str:
-    docker = sandbox is not None and sandbox.kind == "docker"
-    lines = [
+def _opening(present: bool) -> str:
+    if present:
+        return (
+            "You are an agent working through tools. A person is at the terminal and reads what you write. To answer "
+            "them, or when you need their reply before going on, end your turn with your message: their reply "
+            "arrives as the next message. Use `ask` only for decisions that are truly theirs. Call `done` when the "
+            "work is finished, with a summary."
+        )
+    return (
         "You are an autonomous agent working through tools. Nobody is watching: do not wait for confirmation. "
         "Use `ask` only for decisions that are truly the human's; state your assumption and keep working. "
-        "Finish by calling `done` with a summary.",
+        "Finish by calling `done` with a summary."
+    )
+
+
+def _preamble(policy: Policy, cwd: Path, tools: Collection[str], sandbox: Any, root: bool = True) -> str:
+    docker = sandbox is not None and sandbox.kind == "docker"
+    lines = [
+        _opening(root and policy.human.present),
         "Long tool outputs are cut and the full text is stored under a receipt id you can query with `receipt`.",
         "Write text only when it carries something new: a decision, a finding, the final summary. Do not announce "
         "what you are about to do and do not repeat what a tool returned.",
@@ -214,7 +227,7 @@ def build_system(
     same day gets the same bytes, and it is never updated. ``sandbox`` tells
     how paths and commands look from where the agent works (the host when not given).
     """
-    texts = [_preamble(policy, cwd, tools, sandbox)]
+    texts = [_preamble(policy, cwd, tools, sandbox, root)]
     if role.instructions:
         texts.append(role.instructions)
     texts.extend(_instruction_files(policy, cwd, base or cwd))

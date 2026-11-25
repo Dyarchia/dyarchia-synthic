@@ -5,15 +5,29 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import sys
 import time
+import types
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
 import pytest
 
-from synthic.provider import API_VERSION, AnthropicProvider, cost
+from synthic import proc
+from synthic import provider as provider_module
+from synthic.provider import (
+    API_VERSION,
+    KEY_MISSING,
+    AnthropicProvider,
+    _registry_value,
+    cost,
+    find_api_key,
+)
 from synthic.types import ModelRequest, ModelSpec, ProviderError, Usage
+
+REAL_REGISTRY_VALUE = _registry_value
 
 SPEC = ModelSpec(
     alias="opus",
@@ -557,3 +571,66 @@ def test_aclose_leaves_an_injected_client_open() -> None:
     provider, _ = make(server)
     run(provider.aclose())
     run(provider.complete(request()))
+
+
+def fake_registry(monkeypatch: pytest.MonkeyPatch, stored: dict[str, Any] | OSError) -> None:
+    """A ``winreg`` whose ``Environment`` key of the current user holds ``stored``, on a pretended Windows."""
+
+    class Key:
+        def __enter__(self) -> Key:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    def open_key(root: object, path: str) -> Key:
+        assert root == "HKCU" and path == "Environment"
+        if isinstance(stored, OSError):
+            raise stored
+        return Key()
+
+    def query(key: Key, name: str) -> tuple[Any, int]:
+        if name not in stored:
+            raise FileNotFoundError(name)
+        return stored[name], 1
+
+    module = types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", OpenKey=open_key, QueryValueEx=query)
+    monkeypatch.setitem(sys.modules, "winreg", module)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(provider_module, "_registry_value", REAL_REGISTRY_VALUE)
+
+
+def test_api_key_falls_back_to_the_windows_user_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_registry(monkeypatch, {"ANTHROPIC_API_KEY": " registry-key "})
+    assert find_api_key() == "registry-key"
+    server = Server(ok())
+    provider, _ = make(server, api_key=None)
+    run(provider.complete(request()))
+    assert server.requests[0].headers["x-api-key"] == "registry-key"
+    assert "ANTHROPIC_API_KEY" not in os.environ and "ANTHROPIC_API_KEY" not in proc.base_env()
+
+
+def test_the_process_environment_wins_over_the_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
+    fake_registry(monkeypatch, {"ANTHROPIC_API_KEY": "registry-key"})
+    assert find_api_key() == "env-key"
+
+
+@pytest.mark.parametrize("stored", [{}, {"ANTHROPIC_API_KEY": "  "}, {"ANTHROPIC_API_KEY": 7}, OSError("denied")])
+def test_a_registry_without_a_usable_key_finds_nothing(monkeypatch: pytest.MonkeyPatch, stored: Any) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_registry(monkeypatch, stored)
+    assert find_api_key() is None
+
+
+def test_the_registry_is_not_read_outside_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_registry(monkeypatch, {"ANTHROPIC_API_KEY": "registry-key"})
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert find_api_key() is None
+
+
+def test_the_missing_key_message_says_where_it_looks_and_how_to_set_it() -> None:
+    assert "HKEY_CURRENT_USER\\Environment" in KEY_MISSING and "setx ANTHROPIC_API_KEY" in KEY_MISSING
+    assert "export ANTHROPIC_API_KEY" in KEY_MISSING and "\n" not in KEY_MISSING

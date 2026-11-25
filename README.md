@@ -31,6 +31,10 @@ No Python needed.
     setx ANTHROPIC_API_KEY "paste-your-key-here"
     ```
 
+    Synthic reads `ANTHROPIC_API_KEY` from the environment of the terminal and, on Windows, from your user
+    environment in the registry, so a terminal opened by an app that started before this step still finds it.
+    The agent's own commands never see it.
+
 3. Close the terminal, open a new one, and check:
 
     ```powershell
@@ -55,7 +59,11 @@ synthic
 ```
 
 Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`,
-`/context`, `/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves.
+`/context`, `/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves, and so does typing `exit` or
+`quit` while nothing is working.
+
+Here a person is at the terminal (`human.present`): the agent answers a greeting or a question in prose and
+waits for your next message, and when it asks you something it waits, and what you type is the answer.
 
 The tabs at the top draw the same run in four ways, and Ctrl+T moves through them: `Column` (one
 conversation), `Panes` (agents, conversation, and the full text of a step), `Fleet` (the agents side by

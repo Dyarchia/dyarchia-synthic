@@ -15,6 +15,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -26,6 +27,12 @@ import httpx
 from synthic.types import Block, Message, ModelReply, ModelRequest, ModelSpec, ProviderError, Usage
 
 API_VERSION = "2026-10-21"
+KEY_VARIABLE = "ANTHROPIC_API_KEY"
+KEY_MISSING = (
+    f"{KEY_VARIABLE} is not set. It is read from the process environment and, on Windows, from the user environment "
+    f"(HKEY_CURRENT_USER\\Environment). Set it with `setx {KEY_VARIABLE} <your-key>` on Windows, then open a new "
+    f"terminal, or with `export {KEY_VARIABLE}=<your-key>` elsewhere."
+)
 
 CACHEABLE_BLOCKS = frozenset({"text", "image", "document", "tool_use", "tool_result"})
 """Message block types the docs allow to carry ``cache_control``. Thinking, redacted thinking,
@@ -407,6 +414,30 @@ class _Response:
             await self._response.aclose()
 
 
+def _registry_value(name: str) -> str | None:
+    """``name`` from the user environment of Windows (the ``Environment`` key of ``HKEY_CURRENT_USER``), ``None`` elsewhere."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as environment:
+            value, _ = winreg.QueryValueEx(environment, name)
+    except OSError:
+        return None
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def find_api_key() -> str | None:
+    """The API key: the process environment first, then the user environment in the registry on Windows.
+
+    A terminal started by an application that was already running when the variable was created does not
+    have it in its environment, though ``setx`` stored it. The value is only returned: it is never put into
+    ``os.environ``, so the commands the agent runs (``proc.base_env``) cannot see it, and never printed.
+    """
+    return os.environ.get(KEY_VARIABLE) or _registry_value(KEY_VARIABLE)
+
+
 class AnthropicProvider:
     """``Provider`` for the Anthropic Messages API.
 
@@ -459,7 +490,7 @@ class AnthropicProvider:
         clock: Callable[[], float] = time.monotonic,
         search_price: float = 0.0,
     ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._api_key = api_key or find_api_key()
         self.search_price = search_price
         self._base_url = base_url.rstrip("/")
         self.cache_ttl = cache_ttl
@@ -505,7 +536,7 @@ class AnthropicProvider:
 
     def _headers(self, request: ModelRequest) -> dict[str, str]:
         if not self._api_key:
-            raise ProviderError("ANTHROPIC_API_KEY is not set and no api_key was given", retryable=False)
+            raise ProviderError(KEY_MISSING, retryable=False)
         headers = {
             "x-api-key": self._api_key,
             "anthropic-version": API_VERSION,

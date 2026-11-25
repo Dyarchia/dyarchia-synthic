@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from textual.widgets import Input, OptionList, Static
 
+from synthic.cli import TUI_DEFAULTS
 from synthic.policy import LoadedPolicy, deep_merge, load_policy
 from synthic.testing import ScriptedProvider, reply, text, tool_use
 from synthic_tui.app import COMMANDS, SynthicApp
@@ -385,3 +386,82 @@ def test_a_stored_run_is_read_back_with_its_costs_and_outputs(world: tuple[Path,
     assert sum(s.cost for s in board.steps) == pytest.approx(board.total) and board.total > 0
     sh = board.steps[2]
     assert sh.name == "sh" and sh.result == "ok" and any("hello" in line for _, line in board.detail(sh))
+
+
+@pytest.fixture
+def person(world: tuple[Path, Any], tmp_path: Path) -> tuple[Path, Any]:
+    """The same world with the interface's own default: a person is at the terminal."""
+    project, _ = world
+
+    def load(extra: dict[str, Any] | None = None) -> LoadedPolicy:
+        overrides = deep_merge({"journal": {"dir": (tmp_path / "runs").as_posix()}}, extra or {})
+        return load_policy(project, tmp_path / "task.toml", overrides, defaults=TUI_DEFAULTS)
+
+    return project, load
+
+
+def test_a_greeting_is_answered_in_one_call_and_the_run_waits_for_the_person(person: tuple[Path, Any]) -> None:
+    project, load = person
+    provider = ScriptedProvider([reply(text("Hello. What shall we work on?")), reply(text("Done with that."))])
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await send(pilot, "hello")
+            await settle(app, pilot)
+            assert app.state == "replied" and len(provider.requests) == 1
+            assert step(app, "text", "What shall we work on?")
+            assert not any(s.kind == "end" for s in app.board.steps)
+            assert "waiting for you" in status(app) and "failed" not in status(app)
+            assert app.board.agents["root"].state == "replied"
+            first = app.run_id
+            await send(pilot, "just checking")
+            await settle(app, pilot)
+            assert app.run_id == first and app.state == "replied" and len(provider.requests) == 2
+            assert step(app, "text", "Done with that.")
+
+    asyncio.run(scenario())
+    assert not provider.script
+
+
+def test_a_plain_message_answers_the_question_the_agent_is_blocked_on(person: tuple[Path, Any]) -> None:
+    project, load = person
+    ask = reply(tool_use("ask", {"question": "Blue or red?", "assumption": "blue"}))
+    provider = ScriptedProvider([ask, done("Painted it red.")])
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await send(pilot, "paint it")
+            for _ in range(200):
+                await pilot.pause(0.02)
+                if app.blocking_question() is not None:
+                    break
+            assert app.blocking_question() is not None
+            for _ in range(150):
+                await pilot.pause(0.02)
+                if "Type your answer" in str(app.query_one("#ask", Static).render()):
+                    break
+            assert "Type your answer" in str(app.query_one("#ask", Static).render())
+            await send(pilot, "red")
+            await settle(app, pilot)
+            assert app.state == "delivered" and not app.board.waiting()
+            assert step(app, "user", "(answer root-q1) red")
+            assert "The human answered" in str(provider.requests[1].messages[-1]) and "red" in str(provider.requests[1].messages[-1])
+
+    asyncio.run(scenario())
+
+
+def test_exit_and_quit_typed_alone_leave_the_app_only_when_nothing_is_working(world: tuple[Path, Any]) -> None:
+    project, load = world
+    provider = ScriptedProvider([done("Unused.")])
+
+    async def leaves(line: str) -> bool:
+        app = SynthicApp(project, load, lambda: provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await send(pilot, line)
+            await pilot.pause(0.3)
+            return app._exit
+
+    assert asyncio.run(leaves("exit")) and asyncio.run(leaves("quit"))
+    assert not asyncio.run(leaves("exit now"))

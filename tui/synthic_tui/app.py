@@ -32,6 +32,7 @@ from synthic import __version__
 from synthic.agents import Runtime, allowance_of
 from synthic.cli import clock, short, summarize
 from synthic.journal import agents_in, is_alive, list_runs, read_records
+from synthic.loop import Question
 from synthic.policy import LoadedPolicy
 from synthic.transcript import markdown
 from synthic.types import Provider
@@ -61,6 +62,7 @@ ALIASES = {"new": "clear", "reset": "clear", "continue": "resume", "runs": "resu
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 PICKERS = ("resume", "model", "effort", "view")
 PLACEHOLDER = "Write a task and press Enter, or / for commands"
+LEAVE_WORDS = ("exit", "quit")
 KEYS = (
     "Enter sends, / lists the commands, Tab completes, Up recalls a message.\n"
     "Ctrl+T changes the view, Shift+Up and Shift+Down change the agent in focus,\n"
@@ -485,14 +487,24 @@ class SynthicApp(App[None]):
         self.recall = len(self.sent)
         if text.startswith("/"):
             self.command(text)
+        elif text in LEAVE_WORDS and not self.running():
+            self.call_later(self.action_quit)
         elif self.running() and self.runtime is not None:
-            self.tell_agent(text)
+            if (question := self.blocking_question()) is not None:
+                self.reply(self.runtime, question, text)
+            else:
+                self.tell_agent(text)
         else:
             self.begin(text)
 
     def target(self) -> str:
         """The agent a message goes to: the one in focus while it works, the root otherwise."""
         return self.focus_agent if self.live_agent(self.focus_agent) is not None else ROOT
+
+    def blocking_question(self) -> Question | None:
+        """The one open question an agent is blocked on, whose answer a plain typed message is."""
+        open_ = self.runtime.questions() if self.running() and self.runtime is not None else []
+        return open_[0] if len(open_) == 1 and open_[0].waiting else None
 
     def tell_agent(self, text: str, redirect: bool = False) -> None:
         assert self.runtime is not None
@@ -515,7 +527,7 @@ class SynthicApp(App[None]):
                 rows = "\n".join(f"  /{name:<9} {about}" for name, about in COMMANDS.items())
                 self.say(f"Commands\n{rows}\n\n{KEYS}")
             case "exit":
-                self.run_action("quit")
+                self.call_later(self.action_quit)
             case "clear" | "resume" | "model" | "effort" if self.running():
                 self.say(f"A run is working: /stop it before /{word}.")
             case "clear":
@@ -557,14 +569,18 @@ class SynthicApp(App[None]):
         else:
             self.say(f"Several questions are open: /answer <id> <text>, with id one of {', '.join(open_)}.")
             return
+        self.reply(runtime, open_[question_id], text)
+
+    def reply(self, runtime: Runtime, question: Question, text: str) -> None:
+        """Give ``text`` to the agent that waits on ``question``."""
         try:
-            runtime.answer(question_id, text)
+            runtime.answer(question.id, text)
         except KeyError as error:
             self.say(str(error.args[0]), "bad")
             return
-        self.board.answered(question_id)
-        self.board.said(text, open_[question_id].agent_id, f"answer {question_id}")
-        self.transcript.append(f"> (answer {question_id}) {text}")
+        self.board.answered(question.id)
+        self.board.said(text, question.agent_id, f"answer {question.id}")
+        self.transcript.append(f"> (answer {question.id}) {text}")
         self.refresh_ask()
 
     def context(self) -> str:
@@ -763,7 +779,7 @@ class SynthicApp(App[None]):
         elif self.running():
             self.stop_run()
         elif now - self.leave_at < QUIT_WINDOW:
-            self.run_action("quit")
+            self.call_later(self.action_quit)
         else:
             self.leave_at = now
             self.say("Press Ctrl+C again to leave.")
@@ -794,8 +810,11 @@ class SynthicApp(App[None]):
             text.append(badge("waiting", tokens))
             text.append(f"  {name_of(self.board, step.agent)}  {elapsed(time.time() - step.ts)}  {step.ref}\n", style=tokens["ink-muted"])
             text.append(step.text.strip() + "\n", style=tokens["ink"])
-        hint = "/answer <text>" if len(questions) == 1 else "/answer <id> <text>"
-        text.append(f"Answer with {hint}", style=tokens["ink-faint"])
+        if self.blocking_question() is not None:
+            hint = "Type your answer"
+        else:
+            hint = "Answer with " + ("/answer <text>" if len(questions) == 1 else "/answer <id> <text>")
+        text.append(hint, style=tokens["ink-faint"])
         bar.update(text)
         bar.display = True
 
@@ -821,8 +840,8 @@ class SynthicApp(App[None]):
         if self.state == "working":
             parts.append(Text.assemble(("working ", tokens["tide"]), (elapsed(self.elapsed()), muted)))
         else:
-            colour = {"idle": muted, "delivered": tokens["moss"]}.get(self.state, tokens["down"])
-            parts.append(Text(self.state, style=colour))
+            colour = {"idle": muted, "replied": muted, "delivered": tokens["moss"]}.get(self.state, tokens["down"])
+            parts.append(Text("waiting for you" if self.state == "replied" else self.state, style=colour))
         if self.board.agents:
             cap = policy.budget.dollars
             spent = self.board.total
