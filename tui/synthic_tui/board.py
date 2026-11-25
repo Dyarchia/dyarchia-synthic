@@ -18,7 +18,8 @@ from synthic.journal import agents_in, read_records
 from synthic.transcript import entries
 
 ROOT = "root"
-ENDED = ("delivered", "failed", "stopped", "cancelled", "blocked")
+LIVE = ("working", "waiting")
+"""The states of an agent that has not ended; any other state is a final status of the engine."""
 Listener = Callable[[str, Any], None]
 
 
@@ -45,6 +46,7 @@ class Step:
     detail: str = ""
     ref: str = ""
     """The id of a question, so the answer can be written without looking it up."""
+    fetched: bool = False
 
 
 @dataclass
@@ -132,7 +134,7 @@ class Board:
         """A message of the human, as it enters the conversation of an agent."""
         self._close(agent_id)
         view = self.agent(agent_id)
-        if view.state in ENDED or not view.steps:
+        if view.state not in LIVE or not view.steps:
             self._state(view, "working")
         return self._add(agent_id, "user", f"({note}) {text}" if note else text)
 
@@ -220,7 +222,7 @@ class Board:
         self._close(ROOT)
         self._add(ROOT, "end", summary, result=status, error=status != "delivered")
         for view in self.agents.values():
-            if view.state not in ENDED:
+            if view.state in LIVE:
                 self._state(view, status if view.id == ROOT else "stopped")
 
     """Stored: a run read back from its journal."""
@@ -262,7 +264,7 @@ class Board:
                     result = "error" if entry.error else "ok"
                     step = self._add(
                         agent_id, "tool", entry.text, ts, name=entry.name, input=entry.input, detail=entry.detail,
-                        result=result, error=entry.error, seconds=entry.seconds, cost=cost,
+                        result=result, error=entry.error, seconds=entry.seconds, cost=cost, fetched=True,
                     )
                 case "end":
                     step = self._add(agent_id, "end", entry.detail, ts, result=entry.text, error=entry.error, cost=cost)
@@ -280,11 +282,20 @@ class Board:
 
     """The full text of one step, for the pane that shows it."""
 
-    def detail(self, step: Step) -> list[tuple[str, str]]:
-        """Lines of ``(tone, text)`` with tone ``ink``, ``muted``, ``up`` or ``down``."""
+    def known(self, step: Step) -> bool:
+        """Whether ``detail`` has all there is to show without reading the journal."""
+        return step.kind != "tool" or step.fetched or step.result == "running" or self.run_dir is None
+
+    def detail(self, step: Step, fetch: bool = True) -> list[tuple[str, str]]:
+        """Lines of ``(tone, text)`` with tone ``ink``, ``muted``, ``up`` or ``down``.
+
+        A live tool step knows its line and not its input or output. ``fetch`` reads them from the
+        journal, once, when the call has ended: that parses the whole journal of the agent, so whoever
+        follows a run asks for it only when the step stays on screen.
+        """
         if step.kind != "tool":
             return [("ink", line) for line in step.text.splitlines()]
-        if self.run_dir is not None and (step.input is None or (not step.detail and step.result != "running")):
+        if fetch and not self.known(step):
             self._fetch(step)
         lines = [("muted", f"● {step.text}"), ("muted", "")]
         tool_input = step.input or {}
@@ -304,7 +315,7 @@ class Board:
         return lines
 
     def _fetch(self, step: Step) -> None:
-        """A live step knows its line and not its input or output: read them from the journal, by position."""
+        """Find the step in the journal by its position among the tool calls of its agent."""
         assert self.run_dir is not None
         mine = [s for s in self.agents[step.agent].steps if s.kind == "tool"]
         stored = [e for e in entries(read_records(self.run_dir, step.agent)) if e.kind == "tool"]
@@ -313,7 +324,6 @@ class Board:
         entry = stored[index] if 0 <= index < len(stored) and stored[index].text == step.text else None
         if entry is None:
             entry = next((e for e in reversed(stored) if e.text == step.text), None)
+        step.fetched = True
         if entry is not None:
-            step.input = entry.input
-            if step.result != "running":
-                step.detail = entry.detail
+            step.input, step.detail = entry.input, entry.detail

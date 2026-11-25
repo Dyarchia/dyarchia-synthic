@@ -23,7 +23,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.events import Click, Key
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -36,7 +36,7 @@ from synthic.policy import LoadedPolicy
 from synthic.transcript import markdown
 from synthic.types import Provider
 
-from .board import ENDED, ROOT, Board, Step
+from .board import LIVE, ROOT, Board, Step
 from .theme import THEMES, elapsed, money, number, register
 from .views import VIEWS, AgentPicked, ColumnView, FleetView, LedgerView, PanesView, StepPicked, View, badge, name_of
 
@@ -98,7 +98,7 @@ class SynthicApp(App[None]):
     TITLE = "Synthic"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
-    Screen { layout: vertical; background: $background; color: $ink; padding: 1 2 0 2; }
+    Screen { layout: vertical; background: $background; color: $ink; padding: 1 2 0 2; overflow: hidden; }
     Static, Rule, VerticalScroll, HorizontalScroll, Vertical, Horizontal { background: transparent; }
     VerticalScroll { scrollbar-size-vertical: 1; }
     HorizontalScroll { scrollbar-size-horizontal: 1; }
@@ -107,8 +107,8 @@ class SynthicApp(App[None]):
     .tab { width: auto; margin-right: 3; color: $ink-faint; }
     .tab.active { color: $ink; }
     .tab:hover { color: $ink-muted; }
-    #views { height: 1fr; }
-    #views.veiled { text-opacity: 45%; }
+    #views { height: 1fr; min-height: 3; }
+    #views.veiled { opacity: 45%; }
     View { height: 1fr; }
 
     .head { height: 1; }
@@ -122,15 +122,15 @@ class SynthicApp(App[None]):
     .side { width: 26; margin-right: 2; }
     .card { height: 2; margin-bottom: 1; }
     .centre { width: 1fr; }
-    .dock { width: 42; margin-left: 2; }
-    .dock.wide { width: 46; }
+    .dock { width: 36%; min-width: 34; max-width: 60; margin-left: 2; }
+    .dock.wide { width: 40%; min-width: 36; max-width: 64; }
     .detail-body { height: 1fr; }
     .detail-text { height: auto; }
     Meters { height: 6; margin-top: 1; }
 
     .totals { height: 3; margin-bottom: 1; }
     .fleet { height: 1fr; }
-    .lane { width: 1fr; min-width: 28; margin-right: 2; }
+    .lane { width: 1fr; min-width: 26; margin-right: 2; }
     FleetHead { height: 3; }
 
     .table { width: 1fr; }
@@ -138,8 +138,9 @@ class SynthicApp(App[None]):
     .row { height: 1; }
 
     #ask { height: auto; max-height: 8; margin-top: 1; display: none; }
-    #notice { height: auto; max-height: 18; margin-top: 1; color: $ink-muted; display: none; }
-    #notice.bad { color: $down; }
+    #notice { height: auto; max-height: 35vh; margin-top: 1; display: none; }
+    #notice-text { height: auto; color: $ink-muted; }
+    #notice.bad > #notice-text { color: $down; }
     #menu {
         height: auto; max-height: 12; max-width: 96; margin-top: 1; padding: 0 1; display: none;
         background: $ground-raised; border: round $hairline; border-top: round $ink-faint;
@@ -148,6 +149,7 @@ class SynthicApp(App[None]):
     #entry { height: 2; margin-top: 1; border-bottom: solid $line-control; }
     #prompt { width: auto; color: $ink-muted; }
     #box, #box:focus { width: 1fr; height: 1; padding: 0; border: none; background: transparent; }
+    #box > .input--placeholder, #box > .input--suggestion { color: $ink-faint; }
     #status { height: 1; }
     """
     BINDINGS = [
@@ -203,7 +205,9 @@ class SynthicApp(App[None]):
             yield FleetView(self.board, id="fleet")
             yield LedgerView(self.board, id="ledger")
         yield Static("", id="ask")
-        yield Static("", id="notice")
+        with VerticalScroll(id="notice") as notice:
+            notice.can_focus = False
+            yield Static("", id="notice-text")
         menu = OptionList(id="menu")
         menu.can_focus = False
         yield menu
@@ -241,8 +245,18 @@ class SynthicApp(App[None]):
         self.query_one("#box", Input).focus()
 
     def board_event(self, event: str, subject: Any) -> None:
+        """Draw a change of the board. Drawing never ends a run: an error here is shown and the run goes on."""
         if not self.is_mounted:
             return
+        try:
+            self.draw_event(event, subject)
+        except Exception as error:
+            self.drawing_failed(error)
+
+    def drawing_failed(self, error: Exception) -> None:
+        self.say(f"The {VIEWS[self.view_key]} view could not draw a change ({type(error).__name__}: {error}). The run goes on.", "bad")
+
+    def draw_event(self, event: str, subject: Any) -> None:
         view = self.current()
         match event:
             case "reset":
@@ -347,20 +361,24 @@ class SynthicApp(App[None]):
 
     def say(self, line: str, style: str = "") -> None:
         self.transcript.append(line)
-        notice = self.query_one("#notice", Static)
-        notice.update(Text(line))
+        notice = self.query_one("#notice")
+        self.query_one("#notice-text", Static).update(Text(line))
         notice.set_class(style == "bad", "bad")
         notice.display = True
+        notice.scroll_home(animate=False)
 
     def hush(self) -> None:
-        self.query_one("#notice", Static).display = False
+        self.query_one("#notice").display = False
 
     def engine_output(self, agent_id: str, kind: str, text: str) -> None:
         """The output callback of the runtime."""
         self.board.feed(agent_id, kind, text)
-        self.measure(agent_id)
-        self.refresh_ask()
-        self.refresh_status()
+        try:
+            self.measure(agent_id)
+            self.refresh_ask()
+            self.refresh_status()
+        except Exception as error:
+            self.drawing_failed(error)
 
     def measure(self, agent_id: str) -> None:
         runtime = self.runtime
@@ -731,7 +749,7 @@ class SynthicApp(App[None]):
         if self.menu_mode is not None:
             box.value = ""
             self.close_menu()
-        elif self.query_one("#notice", Static).display:
+        elif self.query_one("#notice").display:
             self.hush()
         elif self.running():
             self.stop_run()
@@ -787,11 +805,14 @@ class SynthicApp(App[None]):
 
     def tick(self) -> None:
         for agent_id in list(self.board.agents) if self.running() else []:
-            if self.board.agents[agent_id].state not in ENDED:
+            if self.board.agents[agent_id].state in LIVE:
                 self.measure(agent_id)
-        self.current().tick()
-        self.refresh_ask()
-        self.refresh_status()
+        try:
+            self.current().tick()
+            self.refresh_ask()
+            self.refresh_status()
+        except Exception as error:
+            self.drawing_failed(error)
 
     def refresh_status(self) -> None:
         tokens, policy = self.tokens, self.loaded.policy
@@ -812,7 +833,7 @@ class SynthicApp(App[None]):
             if view is not None and limit:
                 parts.append(Text(f"context {number(view.context)}/{number(limit)}", style=muted))
             parts.append(Text(f"{number(sum(v.calls for v in self.board.agents.values()))} steps", style=muted))
-            live = [v for v in self.board.agents.values() if v.state not in ENDED]
+            live = [v for v in self.board.agents.values() if v.state in LIVE]
             if len(self.board.agents) > 1:
                 parts.append(Text(f"{len(live)} of {len(self.board.agents)} agents", style=muted))
             if waiting := len(self.board.waiting()):

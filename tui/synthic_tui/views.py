@@ -10,16 +10,17 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from rich.console import Group, RenderableType
-from rich.markdown import Markdown
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markdown import CodeBlock, Heading, Markdown
 from rich.text import Text
+from rich.theme import Theme
 from textual.app import ComposeResult
 from textual.containers import Horizontal, HorizontalScroll, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Rule, Static
 
-from .board import ENDED, ROOT, AgentView, Board, Step
+from .board import LIVE, ROOT, AgentView, Board, Step
 from .theme import elapsed, money, number, seconds, state_mark
 
 VIEWS = {"column": "Column", "panes": "Panes", "fleet": "Fleet", "ledger": "Ledger"}
@@ -38,6 +39,44 @@ class AgentPicked(Message):
     def __init__(self, agent_id: str) -> None:
         super().__init__()
         self.agent_id = agent_id
+
+
+class FlatHeading(Heading):
+    """A heading as a line of ink: no box, no centring."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        self.text.justify = "left"
+        yield self.text
+
+
+class FlatCode(CodeBlock):
+    """A code block as it was written, on the sunken ground, with no syntax colours."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield Text(str(self.text).rstrip(), style=console.get_style("markdown.code_block"))
+
+
+class Prose(Markdown):
+    """What the model says, as Markdown drawn in ink alone: structure stays, colour and weight do not."""
+
+    elements = {**Markdown.elements, "heading_open": FlatHeading, "fence": FlatCode, "code_block": FlatCode}
+
+    def __init__(self, markup: str, tokens: dict[str, str]) -> None:
+        super().__init__(markup)
+        ink, muted, sunken = tokens["ink"], tokens["ink-muted"], tokens["ground-sunken"]
+        plain = {f"markdown.{name}": ink for name in ("paragraph", "text", "strong", "em", "emph", "s", "item", "list")}
+        heads = {f"markdown.h{level}": ink for level in range(1, 8)}
+        self.theme = Theme({
+            **plain, **heads, "markdown.h1.border": ink,
+            "markdown.code": f"{ink} on {sunken}", "markdown.code_block": f"{ink} on {sunken}",
+            "markdown.block_quote": muted, "markdown.item.bullet": muted, "markdown.item.number": muted,
+            "markdown.hr": tokens["hairline"], "markdown.link": muted, "markdown.link_url": muted,
+        })
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        with console.use_theme(self.theme):
+            drawn = list(super().__rich_console__(console, options))
+        yield from drawn
 
 
 def cut(text: str, width: int) -> str:
@@ -83,7 +122,7 @@ def body(step: Step, tokens: dict[str, str], who: str = "", plain: bool = False)
         case "text" if plain or who:
             return Text.assemble(lead, (step.text.strip(), ink))
         case "text":
-            return Markdown(step.text)
+            return Prose(step.text, tokens)
         case "tool":
             dot = tokens["tide"] if step.result == "running" else muted
             line = Text.assemble(lead, ("● ", dot), (brief(step.text) if plain else step.text, muted), "  ", outcome(step, tokens))
@@ -98,7 +137,7 @@ def body(step: Step, tokens: dict[str, str], who: str = "", plain: bool = False)
                 return mark
             if plain or who:
                 return Text.assemble(lead, (step.text.strip() + "\n", ink), mark)
-            return Group(Markdown(step.text), mark)
+            return Group(Prose(step.text, tokens), mark)
         case _:
             return Text.assemble(lead, ("! ", tokens["sun"]), (step.text, muted))
 
@@ -201,6 +240,7 @@ class Detail(Vertical):
         super().__init__(**more)
         self.board = board
         self.meters = meters
+        self.pending: Any = None
 
     def compose(self) -> ComposeResult:
         yield Head("DETAIL", classes="head")
@@ -219,12 +259,22 @@ class Detail(Vertical):
             self.query_one(".detail-text", Static).update(Text("Nothing selected", style=tokens["ink-faint"]))
             return
         head.set("DETAIL", f"{name_of(self.board, step.agent)} · step {step.n} · {time.strftime('%H:%M:%S', time.localtime(step.ts))}")
+        self.draw(step, fetch=False)
+        self.query_one(".detail-body", VerticalScroll).scroll_home(animate=False)
+        if self.pending is not None:
+            self.pending.stop()
+        self.pending = None if self.board.known(step) else self.set_timer(0.3, lambda: self.draw(step, fetch=True))
+
+    def draw(self, step: Step, fetch: bool) -> None:
+        """Write what is known at once; the output of a call that just ended is read a moment later."""
+        if fetch and step is not self.app.selected:
+            return
+        tokens = self.app.tokens
         tones = {"ink": tokens["ink"], "muted": tokens["ink-muted"], "up": tokens["up"], "down": tokens["down"]}
         text = Text()
-        for tone, line in self.board.detail(step)[:2000]:
+        for tone, line in self.board.detail(step, fetch)[:2000]:
             text.append(line + "\n", style=tones[tone])
         self.query_one(".detail-text", Static).update(text)
-        self.query_one(".detail-body", VerticalScroll).scroll_home(animate=False)
 
 
 class Meters(Widget):
@@ -475,7 +525,7 @@ class FleetView(View):
 
     def wanted(self) -> list[str]:
         views = list(self.board.agents.values())
-        live = [view.id for view in views if view.id == ROOT or view.state not in ENDED]
+        live = [view.id for view in views if view.id == ROOT or view.state in LIVE]
         done = [view.id for view in reversed(views) if view.id not in live]
         keep = set(live) | set(done[: max(0, self.ROOM - len(live))])
         return [view.id for view in views if view.id in keep]

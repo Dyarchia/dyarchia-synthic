@@ -260,8 +260,10 @@ def test_every_view_draws_the_same_run_and_the_choice_is_remembered(world: tuple
             assert "edit: a.txt (+2 -1)" in line and " ok " in line and "0,0s" in line
             assert app.selected is app.board.steps[-1] and app.follow
             await pilot.press("ctrl+up")
-            assert app.selected is edit and not app.follow
-            shown = str(ledger.query_one(".detail-text", Static).render())
+            assert app.selected is edit and not app.follow and not edit.fetched
+            await pilot.pause(0.5)
+            assert edit.fetched
+            shown =str(ledger.query_one(".detail-text", Static).render())
             assert "-two" in shown and "+2" in shown and "+3" in shown
             await pilot.press("ctrl+t")
             assert app.view_key == "column" and app.focused is app.query_one("#box", Input)
@@ -337,6 +339,27 @@ def test_several_agents_and_a_question_reach_every_view(world: tuple[Path, Any])
             assert board.agents["a2"].state == "working" and not board.waiting()
 
     asyncio.run(scenario())
+
+
+def test_a_view_that_fails_to_draw_never_ends_the_run(world: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    project, load = world
+    script = [reply(text("Looking."), tool_use("sh", {"command": "echo hello"})), done("Said hello.")]
+    provider = ScriptedProvider(script)
+
+    def broken(self: Any, step: Step) -> None:
+        raise RuntimeError("no lane")
+
+    monkeypatch.setattr("synthic_tui.views.ColumnView.step_added", broken)
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: provider, task="say hello")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await settle(app, pilot)
+            assert app.state == "delivered" and step(app, "end", "Said hello.")
+            assert said(app, "could not draw a change (RuntimeError: no lane). The run goes on.")
+
+    asyncio.run(scenario())
+    assert not provider.script
 
 
 def test_a_stored_run_is_read_back_with_its_costs_and_outputs(world: tuple[Path, Any]) -> None:
