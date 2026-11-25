@@ -1,10 +1,12 @@
-"""Every way out of the interface, driven as a person drives it: a real process under a Windows pseudo console.
+"""The interface as a person meets it: a real process under a Windows pseudo console, and every way out of it.
 
 The headless ``Pilot`` of the other tests cannot see a key that never reaches the program, or an exit that
 is requested but never carried out (v0.4.0 shipped an un-awaited ``run_action("quit")``). Here the program is
 started as ``python -m synthic`` in a real console, real key bytes are written, and the process must end,
 with no process of its tree left behind. A run that is working is a scripted model asking for a shell
 command that sleeps (``pty_app.py``), so no model is called.
+The same console shows what a terminal receives: the start screen, the background of every edge (checked with
+``pyte`` when it is installed) and a mouse click on a tab of the status line.
 Skipped where ``pywinpty`` is not installed or the platform is not Windows.
 """
 
@@ -81,6 +83,7 @@ class Console:
     """A program in a pseudo console: it keeps what the screen received and writes keys to it."""
 
     def __init__(self, home: Path, cwd: Path, argv: list[str], size: tuple[int, int]) -> None:
+        self.home = home
         (home / ".synthic").mkdir(parents=True)
         (home / ".synthic" / "policy.toml").write_text(POLICY, encoding="utf-8")
         env = {**os.environ, "SYNTHIC_HOME": str(home), "ANTHROPIC_API_KEY": "sk-test-not-used"}
@@ -272,3 +275,42 @@ def test_the_help_fits_whole_at_120_by_35(launch) -> None:
     assert console.wait_for("with text it deletes a char", 5, mark)
     assert "more below" not in console.seen[mark:]
     assert "leave Synthic" in console.seen[mark:]
+
+
+def test_the_start_is_short_the_terminal_gets_the_ground_and_gives_it_back(launch) -> None:
+    console = launch()
+    ready(console)
+    assert "]11;#141413" in console.seen, "the terminal was not asked to use the ground as its background"
+    assert "Synthic" in console.seen
+    for help_line in ("Enter sends", "Tab completes", "Esc interrupts"):
+        assert help_line not in console.seen
+    console.press(CTRL_C, CTRL_C)
+    assert_left(console, "Ctrl+C twice")
+    assert console.seen.rindex("]111") > console.seen.rindex("]11;#141413")
+
+
+def test_a_mouse_click_on_a_tab_of_the_status_line_chooses_the_view(launch) -> None:
+    console = launch(size=(30, 100))
+    ready(console)
+    console.press("[<0;15;30M", "[<0;15;30m")
+    deadline = time.monotonic() + 5
+    state = console.home / ".synthic" / "tui.json"
+    while time.monotonic() < deadline and not (state.exists() and "panes" in state.read_text(encoding="utf-8")):
+        time.sleep(0.1)
+    assert json.loads(state.read_text(encoding="utf-8")) == {"view": "panes"}
+
+
+@pytest.mark.parametrize("size", [(24, 80), (37, 133), (60, 280)], ids=["80x24", "133x37", "280x60"])
+def test_every_cell_up_to_the_last_column_and_row_is_painted_with_the_ground(launch, size: tuple[int, int]) -> None:
+    pyte = pytest.importorskip("pyte")
+    rows, columns = size
+    console = launch(size=size)
+    ready(console)
+    time.sleep(1.0)
+    screen = pyte.Screen(columns, rows)
+    pyte.Stream(screen).feed(console.seen)
+    ground, tab = "141413", "24241f"
+    cells = [[screen.buffer[y][x] for x in range(columns)] for y in range(rows)]
+    assert {cell.bg for row in cells for cell in row} <= {ground, tab, "f3f1ec"}
+    assert {row[-1].bg for row in cells} == {ground} and {row[0].bg for row in cells} == {ground}
+    assert {cell.bg for cell in cells[-1]} <= {ground, tab} and {cell.bg for cell in cells[0]} == {ground}

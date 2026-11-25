@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from textual.events import Click
 from textual.widgets import Input, OptionList, Static
 
+from synthic import __version__
 from synthic.cli import TUI_DEFAULTS
 from synthic.policy import LoadedPolicy, deep_merge, load_policy
 from synthic.testing import ScriptedProvider, reply, text, tool_use
-from synthic_tui.app import COMMANDS, SynthicApp
+from synthic_tui.app import COMMANDS, STATUS_DROPS, SynthicApp
 from synthic_tui.board import Board, Step
+from synthic_tui.theme import SPACE
 from synthic_tui.views import VIEWS, AgentCard, FleetColumn, Row, Stream
 
 POLICY = """
@@ -89,7 +95,7 @@ async def send(pilot: Any, line: str) -> None:
 
 
 def status(app: SynthicApp) -> str:
-    return str(app.query_one("#status", Static).render())
+    return str(app.query_one("#stats", Static).render())
 
 
 def said(app: SynthicApp, piece: str) -> bool:
@@ -258,7 +264,7 @@ def test_every_view_draws_the_same_run_and_the_choice_is_remembered(world: tuple
             assert len(rows) == len(app.board.steps) == 4
             edit = step(app, "tool", "edit: a.txt (+2 -1)")
             line = next(str(row.render()) for row in rows if row.step is edit)
-            assert "edit: a.txt (+2 -1)" in line and " ok " in line and "0,0s" in line
+            assert "edit: a.txt (+2 -1)" in line and " ok " in line and re.search(r"\d,\ds", line)
             assert app.selected is app.board.steps[-1] and app.follow
             await pilot.press("ctrl+up")
             assert app.selected is edit and not app.follow and not edit.fetched
@@ -463,7 +469,7 @@ def test_exit_and_quit_typed_alone_leave_the_app_only_when_nothing_is_working(wo
             await pilot.pause(0.3)
             return app._exit
 
-    assert asyncio.run(leaves("exit")) and asyncio.run(leaves("quit"))
+    assert all(asyncio.run(leaves(line)) for line in ("exit", "quit", "/exit", "/quit"))
     assert not asyncio.run(leaves("exit now"))
 
 
@@ -521,3 +527,255 @@ def test_ctrl_c_and_ctrl_d_need_a_second_press_in_every_state(world: tuple[Path,
     assert asyncio.run(leaves("ctrl+d", "ctrl+d")) == (True, "")
     assert asyncio.run(leaves("ctrl+c", "ctrl+d"))[0] is False
     assert asyncio.run(leaves("ctrl+d", "ctrl+d", typed="text")) == (False, "xt")
+
+
+def screen_cells(app: SynthicApp) -> list[list[tuple[str, str]]]:
+    """Every cell of the screen as it is sent to the terminal: its character and the background it is painted on."""
+    rows = []
+    for strip in app.screen._compositor.render_strips():
+        row = []
+        for segment in strip:
+            colour = segment.style.bgcolor if segment.style else None
+            paint = colour.get_truecolor().hex if colour is not None else "none"
+            row.extend((char, paint) for char in segment.text)
+        rows.append(row)
+    return rows
+
+
+def screen_text(app: SynthicApp) -> str:
+    return "\n".join("".join(char for char, _ in row) for row in screen_cells(app))
+
+
+def test_the_start_is_a_short_identity_block_and_the_help_lives_in_help(world: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    project, load = world
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: project.parent))
+    home = str(Path("~") / "proj")
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: ScriptedProvider([]))
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app.transcript == [f"Synthic {__version__}\n{home}"]
+            visible = screen_text(app)
+            assert f"Synthic {__version__}" in visible and home in visible and str(project.parent) not in visible
+            for help_line in ("Enter sends", "Tab completes", "Ctrl+", "Esc interrupts", "/ lists"):
+                assert help_line not in visible
+            assert "/ for commands" in app.query_one("#box", Input).placeholder
+            await send(pilot, "/help")
+            assert "Ctrl+T" in app.transcript[-1] and "Tab" in app.transcript[-1]
+            await send(pilot, "/clear")
+            assert app.transcript[-1] == f"Synthic {__version__}\n{home}"
+
+    asyncio.run(scenario())
+
+
+def test_a_long_working_folder_gives_way_at_a_separator_and_is_never_split(world: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    project, load = world
+    deep = project / ("a-long-folder-name" * 3) / "inner"
+    deep.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: project.parent))
+
+    async def scenario() -> None:
+        app = SynthicApp(deep, load, lambda: ScriptedProvider([]))
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause(0.05)
+            where = str(app.query_one("#notice-text", Static).render()).splitlines()[1]
+            assert where.startswith("…") and where.endswith("inner") and len(where) <= 60 - 4
+
+    asyncio.run(scenario())
+
+
+def crowd(app: SynthicApp) -> None:
+    """Several agents, a question, a spend and a run, so that every item of the status line has something to say."""
+    board = app.board
+    board.said("go")
+    board.feed("root", "agent_start", "lead: go")
+    board.feed("a1", "agent_start", "apex: part")
+    board.feed("a1", "question", "a1-q1: which one?")
+    board.measure("root", 0.5, 3, 4200)
+    app.state, app.started, app.run_id = "working", time.monotonic(), "20260101-abcdef"
+    app.refresh_status()
+
+
+@pytest.mark.parametrize("width", [80, 120, 280])
+def test_the_status_line_holds_the_tabs_and_gives_up_items_in_a_fixed_order(world: tuple[Path, Any], width: int) -> None:
+    project, load = world
+    marks = {"run": "run 2026", "agents": "agents", "steps": "steps", "context": "context", "model": "test", "cost": " $", "waiting": "◆"}
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, None)
+        async with app.run_test(size=(width, 30)) as pilot:
+            crowd(app)
+            await pilot.pause(0.05)
+            stats = app.query_one("#stats", Static)
+            assert app.query_one("#status").region.bottom == 30 and not app.query("#tabs")
+            assert [str(app.query_one(f"#tab-{key}", Static).render()) for key in VIEWS] == list(VIEWS.values())
+            assert all(app.query_one(f"#tab-{key}").region.right <= stats.region.x for key in VIEWS)
+            line = str(stats.render())
+            assert len(line) <= stats.region.width and "…" not in line and "working" in line
+            assert all(part.strip() for part in line.removeprefix("│ ").split(" │ "))
+            present = [name for name in STATUS_DROPS if marks[name] in line]
+            assert present == list(STATUS_DROPS)[len(STATUS_DROPS) - len(present):]
+            visible = screen_text(app)
+            assert all(label in visible for label in VIEWS.values())
+            if width == 280:
+                assert present == list(STATUS_DROPS)
+            if width == 80:
+                assert present and "run 2026" not in line and "agents" not in line
+
+    asyncio.run(scenario())
+
+
+def test_the_active_tab_is_unmistakable_and_a_click_or_ctrl_t_changes_it(world: tuple[Path, Any]) -> None:
+    project, load = world
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, None)
+        async with app.run_test(size=(120, 30)) as pilot:
+            column, panes = app.query_one("#tab-column"), app.query_one("#tab-panes")
+            assert column.has_class("active") and not panes.has_class("active")
+            assert column.styles.text_style.bold and not panes.styles.text_style.bold
+            assert column.styles.background != panes.styles.background
+            assert column.styles.color.hex.lower() == SPACE["focus"] and panes.styles.color.hex.lower() == SPACE["ink-muted"]
+            fleet = app.query_one("#tab-fleet")
+            x, y = fleet.region.x + 2, fleet.region.y
+            assert app.screen.get_widget_at(x, y)[0] is fleet
+            fleet.post_message(Click(fleet, 2, 0, 0, 0, 1, False, False, False, screen_x=x, screen_y=y))
+            await pilot.pause(0.05)
+            assert app.view_key == "fleet" and app.query_one("#tab-fleet").has_class("active") and not column.has_class("active")
+            assert app.focused is app.query_one("#box", Input)
+            await pilot.press("ctrl+t")
+            assert app.view_key == "ledger" and app.query_one("#tab-ledger").has_class("active")
+            await pilot.press("ctrl+t")
+            assert app.view_key == "column"
+
+    asyncio.run(scenario())
+
+
+def test_every_view_has_a_quiet_empty_state_and_none_is_never_printed(world: tuple[Path, Any]) -> None:
+    project, load = world
+    says = {"column": "No conversation yet", "panes": "No agents yet", "fleet": "No agents yet", "ledger": "No steps yet"}
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, None)
+        async with app.run_test(size=(120, 35)) as pilot:
+            for key in VIEWS:
+                await send(pilot, f"/view {key}")
+                await pilot.pause(0.1)
+                text = screen_text(app)
+                assert says[key] in text, key
+                assert "None" not in text and "none" not in text, key
+                assert not app.board.agents, f"showing {key} must not invent an agent"
+            await send(pilot, "/cost")
+            assert said(app, "Nothing spent") and "None" not in app.transcript[-1]
+            app.board.said("go")
+            await pilot.pause(0.1)
+            for key in VIEWS:
+                await send(pilot, f"/view {key}")
+                await pilot.pause(0.1)
+                assert says[key] not in screen_text(app), key
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(80, 24), (133, 37), (280, 60)], ids=["80x24", "133x37", "280x60"])
+def test_the_screen_paints_one_background_to_every_edge_in_every_view(world: tuple[Path, Any], size: tuple[int, int]) -> None:
+    project, load = world
+    ground, tab = SPACE["ground"], SPACE["ground-selected"]
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, None)
+        async with app.run_test(size=size) as pilot:
+            for key in VIEWS:
+                await send(pilot, f"/view {key}")
+                await pilot.pause(0.1)
+                cells = screen_cells(app)
+                assert len(cells) == size[1] and all(len(row) == size[0] for row in cells), key
+                assert {paint for row in cells for _, paint in row} <= {ground, tab, SPACE["ink"], SPACE["tide-tile"]}, key
+                assert {row[-1][1] for row in cells} == {ground} and {row[0][1] for row in cells} == {ground}, key
+                assert {paint for _, paint in cells[0]} == {ground} and {paint for _, paint in cells[-1]} <= {ground, tab}, key
+
+    asyncio.run(scenario())
+
+
+def test_slash_answer_names_the_question_when_several_are_open(world: tuple[Path, Any]) -> None:
+    project, load = world
+
+    class Runtime:
+        def __init__(self, *ids: str) -> None:
+            self.open = [SimpleNamespace(id=i, agent_id="root", waiting=True) for i in ids]
+            self.given: list[tuple[str, str]] = []
+
+        def questions(self) -> list[Any]:
+            return self.open
+
+        def answer(self, question_id: str, text: str) -> None:
+            self.given.append((question_id, text))
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, None)
+        async with app.run_test(size=(120, 40)):
+            several = Runtime("a-q1", "b-q1")
+            app.answer(several, "plain words")
+            assert said(app, "Several questions are open: /answer <id> <text>") and several.given == []
+            app.answer(several, "b-q1 yes, go on")
+            assert several.given == [("b-q1", "yes, go on")]
+            one = Runtime("a-q1")
+            app.answer(one, "no")
+            assert one.given == [("a-q1", "no")]
+            app.answer(Runtime(), "anything")
+            assert said(app, "No question is open.")
+
+    asyncio.run(scenario())
+
+
+def test_slash_instructions_lists_the_repo_files_and_switches_them_from_the_next_run(world: tuple[Path, Any]) -> None:
+    project, load = world
+    (project / "AGENTS.md").write_text("Repo says: use tabs.", encoding="utf-8")
+    provider = ScriptedProvider([done("One."), done("Two."), done("Three.")])
+
+    def prompt(index: int) -> str:
+        return " ".join(block["text"] for block in provider.requests[index].system)
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app.loaded.policy.instructions.load_repo_files is True
+            await send(pilot, "/instructions")
+            assert said(app, "Repo instruction files are on.") and said(app, str(project / "AGENTS.md"))
+            assert "CLAUDE.md" not in app.transcript[-1]
+            await send(pilot, "/instructions off")
+            assert app.loaded.policy.instructions.load_repo_files is False
+            for piece in ("now off", "next run", "/clear", "instructions.load_repo_files", "this session"):
+                assert piece in app.transcript[-1], piece
+            await send(pilot, "/model other")
+            assert app.loaded.policy.instructions.load_repo_files is False and "other" in status(app)
+            await send(pilot, "first")
+            await settle(app, pilot)
+            assert "Repo says: use tabs." not in prompt(0) and "comes from the repository" not in prompt(0)
+            await send(pilot, "/instructions bogus")
+            assert said(app, "Usage: /instructions [on|off]")
+            await send(pilot, "/clear")
+            await send(pilot, "/instructions on")
+            assert app.loaded.policy.instructions.load_repo_files is True and app.loaded.policy.roles["lead"].model == "other"
+            await send(pilot, "second")
+            await settle(app, pilot)
+            assert "Repo says: use tabs." in prompt(1) and "comes from the repository" in prompt(1)
+
+    asyncio.run(scenario())
+
+
+def test_slash_instructions_is_refused_while_a_run_is_working_like_slash_model(world: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    project, load = world
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: ScriptedProvider([]))
+        async with app.run_test(size=(120, 40)) as pilot:
+            monkeypatch.setattr(app, "running", lambda: True)
+            await send(pilot, "/instructions off")
+            assert said(app, "A run is working: /stop it before /instructions.")
+            assert app.loaded.policy.instructions.load_repo_files is True and app.extra == {}
+            await send(pilot, "/model other")
+            assert said(app, "A run is working: /stop it before /model.")
+            assert "instructions" in COMMANDS
+
+    asyncio.run(scenario())

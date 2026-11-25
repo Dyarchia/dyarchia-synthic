@@ -29,6 +29,13 @@ SHOWN = 400
 BARS = " ▁▂▃▄▅▆▇█"
 
 
+class Empty(Static):
+    """What a part of a view says while there is nothing to draw in it: one quiet line."""
+
+    def __init__(self, text: str, classes: str = "") -> None:
+        super().__init__(text, classes=f"empty {classes}".strip())
+
+
 class StepPicked(Message):
     def __init__(self, step: Step) -> None:
         super().__init__()
@@ -183,7 +190,8 @@ class Stream(VerticalScroll):
 
     def rebuild(self, agent_id: str | None = None) -> None:
         self.agent_id = agent_id
-        steps = self.board.steps if agent_id is None else self.board.agent(agent_id).steps
+        view = None if agent_id is None else self.board.agents.get(agent_id)
+        steps = self.board.steps if agent_id is None else (view.steps if view else [])
         self.remove_children()
         self.items, self.last = {}, None
         self.mount(*[self._entry(step) for step in steps[-SHOWN:]])
@@ -357,13 +365,21 @@ class View(Widget):
 
 class ColumnView(View):
     def compose(self) -> ComposeResult:
+        yield Empty("No conversation yet")
         yield Stream(self.board, classes="measure")
+
+    def sync(self) -> None:
+        drawn = bool(self.board.steps)
+        self.query_one(Stream).display = drawn
+        self.query_one(Empty).display = not drawn
 
     def rebuild(self) -> None:
         self.query_one(Stream).rebuild(None)
+        self.sync()
 
     def step_added(self, step: Step) -> None:
         self.query_one(Stream).add(step)
+        self.sync()
 
     def step_changed(self, step: Step) -> None:
         self.query_one(Stream).change(step)
@@ -375,13 +391,22 @@ class PanesView(View):
             with Vertical(classes="side"):
                 yield Head("AGENTS", classes="head")
                 yield Rule(classes="rule")
+                yield Empty("No agents yet", classes="no-agents")
                 with VerticalScroll(classes="cards") as cards:
                     cards.can_focus = False
             with Vertical(classes="centre"):
                 yield Head("", classes="head talk")
                 yield Rule(classes="rule")
+                yield Empty("No steps yet", classes="no-steps")
                 yield Stream(self.board, plain=True)
             yield Detail(self.board, meters=True, classes="dock")
+
+    def sync(self) -> None:
+        agents, steps = bool(self.board.agents), bool(self.board.steps)
+        self.query_one(".cards").display = agents
+        self.query_one(".no-agents").display = not agents
+        self.query_one(Stream).display = steps
+        self.query_one(".no-steps").display = not steps
 
     def rebuild(self) -> None:
         cards = self.query_one(".cards", VerticalScroll)
@@ -395,15 +420,17 @@ class PanesView(View):
         for card in self.query(AgentCard):
             card.set_class(card.view.id == focus, "selected")
         view = self.board.agents.get(focus)
-        self.query_one(".talk", Head).set(name_of(self.board, focus).upper(), view.task if view else "")
+        self.query_one(".talk", Head).set(name_of(self.board, focus).upper() if view else "", view.task if view else "")
         if full or stream.agent_id != focus:
             stream.rebuild(focus)
         stream.mark(app.selected if app.selected is not None and app.selected.agent == focus else None)
         self.query_one(Detail).show(app.selected)
         self.query_one(Meters).refresh()
+        self.sync()
 
     def step_added(self, step: Step) -> None:
         self.query_one(Stream).add(step)
+        self.sync()
 
     def step_changed(self, step: Step) -> None:
         self.query_one(Stream).change(step)
@@ -416,6 +443,7 @@ class PanesView(View):
             cards[view.id].refresh()
         else:
             self.query_one(".cards", VerticalScroll).mount(AgentCard(self.board, view, classes="card"))
+        self.sync()
         if view.id == self.app.focus_agent:
             self.query_one(".talk", Head).set(name_of(self.board, view.id).upper(), view.task)
 
@@ -439,7 +467,7 @@ class Totals(Widget):
         tokens = app.tokens
         cap = app.loaded.policy.budget.dollars
         cells = [
-            ("RUN", app.run_id or "none", app.cwd.name),
+            ("RUN", app.run_id or "no run", app.cwd.name),
             ("ELAPSED", elapsed(app.elapsed()), "from " + time.strftime("%H:%M", time.localtime(board.started)) if board.started else ""),
             ("SPENT", money(board.total), f"of {money(cap)}" if cap else "no cap"),
             ("STEPS", number(sum(view.calls for view in board.agents.values())), f"{len(board.agents)} agents"),
@@ -519,9 +547,15 @@ class FleetView(View):
 
     def compose(self) -> ComposeResult:
         yield Totals(self.board, classes="totals")
+        yield Empty("No agents yet")
         scroll = HorizontalScroll(classes="fleet")
         scroll.can_focus = False
         yield scroll
+
+    def sync(self) -> None:
+        agents = bool(self.board.agents)
+        self.query_one(".fleet").display = agents
+        self.query_one(Empty).display = not agents
 
     def wanted(self) -> list[str]:
         views = list(self.board.agents.values())
@@ -536,6 +570,7 @@ class FleetView(View):
         columns = [FleetColumn(self.board, self.board.agents[agent_id], classes="lane") for agent_id in self.wanted()]
         fleet.mount(*columns)
         self.shown = self.wanted()
+        self.sync()
         self.call_after_refresh(self.fill)
 
     def lanes(self, agent_id: str | None = None) -> list[Stream]:
@@ -633,9 +668,15 @@ class LedgerView(View):
             with Vertical(classes="table"):
                 yield LedgerHead(classes="head")
                 yield Rule(classes="rule")
+                yield Empty("No steps yet")
                 with VerticalScroll(classes="rows") as rows:
                     rows.can_focus = False
             yield Detail(self.board, classes="dock wide")
+
+    def sync(self) -> None:
+        drawn = bool(self.board.steps)
+        self.query_one(".rows").display = drawn
+        self.query_one(Empty).display = not drawn
 
     def rebuild(self) -> None:
         rows = self.query_one(".rows", VerticalScroll)
@@ -643,6 +684,7 @@ class LedgerView(View):
         self.rows = {step.n: Row(self.board, step, classes="row") for step in self.board.steps[-SHOWN:]}
         rows.mount(*self.rows.values())
         rows.scroll_end(animate=False)
+        self.sync()
         self.selection_changed()
 
     def step_added(self, step: Step) -> None:
@@ -651,6 +693,7 @@ class LedgerView(View):
             self.rows.pop(min(self.rows)).remove()
         self.rows[step.n] = Row(self.board, step, classes="row")
         rows.mount(self.rows[step.n])
+        self.sync()
         if self.app.follow:
             rows.scroll_end(animate=False)
 

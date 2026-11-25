@@ -1,8 +1,9 @@
 """The terminal interface of Synthic: four views of one run, a message box and a status line.
 
-A row of tabs chooses how the run is drawn (``Column``, ``Panes``, ``Fleet``, ``Ledger``); below it the
-message box always has the keyboard, with one status line under it. A line that starts with ``/`` is a
-command and never reaches the model; anything else is a task, or a message to the agent in focus.
+The message box always has the keyboard. Under it one status line holds all the chrome: the tabs that choose
+how the run is drawn (``Column``, ``Panes``, ``Fleet``, ``Ledger``) and then the state of the run. A line that
+starts with ``/`` is a command and never reaches the model; anything else is a task, or a message to the agent
+in focus.
 
 It sits on ``synthic.agents.Runtime`` the same way the command line does. The engine knows nothing about
 it: this package reads the output callback, the ledger and the journal, and calls the four controls of the
@@ -33,7 +34,7 @@ from synthic.agents import Runtime, allowance_of
 from synthic.cli import clock, short, summarize
 from synthic.journal import agents_in, is_alive, list_runs, read_records
 from synthic.loop import Question
-from synthic.policy import LoadedPolicy
+from synthic.policy import LoadedPolicy, deep_merge
 from synthic.transcript import markdown
 from synthic.types import Provider
 
@@ -49,6 +50,7 @@ COMMANDS = {
     "resume": "open an earlier run and continue it",
     "model": "choose the model of the next tasks",
     "effort": "choose the effort of the next tasks",
+    "instructions": "show or switch the repo files AGENTS.md and CLAUDE.md: /instructions [on|off]",
     "view": "choose how the run is drawn: /view [column|panes|fleet|ledger]",
     "stop": "stop the run that is working",
     "redirect": "stop the current step and give a new direction: /redirect <text>",
@@ -63,11 +65,6 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 PICKERS = ("resume", "model", "effort", "view")
 PLACEHOLDER = "Write a task and press Enter, or / for commands"
 LEAVE_WORDS = ("exit", "quit")
-KEYS = (
-    "Enter sends, / lists the commands, Tab completes, Up recalls a message.\n"
-    "Ctrl+T changes the view, Shift+Up and Shift+Down change the agent in focus,\n"
-    "Ctrl+Up and Ctrl+Down move the selected step. Esc interrupts, Ctrl+C or Ctrl+D twice leaves."
-)
 HELP_KEYS = (
     ("Enter", "send the message, or answer the open question"),
     ("Tab", "complete a command; Up and Down recall a sent message"),
@@ -81,13 +78,47 @@ SCROLL_KEYS = ("up", "down", "pageup", "pagedown")
 RUNS_SHOWN = 30
 QUIT_WINDOW = 2.0
 QUIT_GRACE = 3.0
-HELP_CHROME = 12
+HELP_CHROME = 10
+TABS_WIDTH = sum(len(label) + 2 for label in VIEWS.values()) + len(VIEWS)
+"""Columns the tabs take in the status line: each label with a space on both sides, and one space after it."""
+PAGE_MARGIN = 4
+"""Columns the screen keeps free on both sides of the page."""
+STATUS_DROPS = ("run", "agents", "steps", "context", "model", "cost", "waiting")
+"""The order in which the status line gives up its items when the window is narrow. The state is never given up."""
 
 
 def state_file() -> Path:
     """Where the interface remembers the view last used. It is not policy: nothing here binds an agent."""
     raw = os.environ.get("SYNTHIC_HOME")
     return (Path(raw) if raw else Path.home()) / ".synthic" / "tui.json"
+
+
+def shown(path: Path, width: int = 0) -> str:
+    """``path`` with the home folder written as ``~``. When it is wider than ``width`` its start gives way, at a
+    separator, to an ellipsis."""
+    try:
+        text = str(Path("~") / path.relative_to(Path.home()))
+    except ValueError:
+        text = str(path)
+    if width <= 0 or len(text) <= width:
+        return text
+    tail = text[len(text) - (width - 1):]
+    cut = min((tail.find(sep) for sep in ("\\", "/") if sep in tail), default=-1)
+    return "…" + (tail[cut:] if cut >= 0 else tail)
+
+
+def fitted(items: dict[str, Text], room: int, rule: Text) -> Text:
+    """The status items that fit in ``room`` columns, joined by ``rule``: items are dropped in ``STATUS_DROPS`` order."""
+    keep = dict(items)
+
+    def width() -> int:
+        return sum(item.cell_len for item in keep.values()) + rule.cell_len * (len(keep) - 1)
+
+    for name in STATUS_DROPS:
+        if width() <= room:
+            break
+        keep.pop(name, None)
+    return rule.join(keep.values())
 
 
 def remembered() -> str:
@@ -99,6 +130,8 @@ def remembered() -> str:
 
 
 class Tab(Static):
+    """One view in the status line; a click chooses it."""
+
     def __init__(self, key: str) -> None:
         super().__init__(VIEWS[key], classes="tab", id=f"tab-{key}")
         self.key = key
@@ -126,10 +159,11 @@ class SynthicApp(App[None]):
     VerticalScroll { scrollbar-size-vertical: 1; }
     HorizontalScroll { scrollbar-size-horizontal: 1; }
 
-    #tabs { height: 1; margin-bottom: 1; }
-    .tab { width: auto; margin-right: 3; color: $ink-faint; }
-    .tab.active { color: $ink; }
-    .tab:hover { color: $ink-muted; }
+    .tab { width: auto; margin-right: 1; padding: 0 1; color: $ink-muted; }
+    .tab:hover { color: $ink; background: $ground-hover; }
+    .tab.active { color: $accent; text-style: bold; background: $ground-selected; }
+    #stats { width: 1fr; }
+    .empty { height: 1; color: $ink-faint; text-wrap: nowrap; text-overflow: ellipsis; }
     #views { height: 1fr; min-height: 3; }
     #views.veiled { opacity: 45%; }
     View { height: 1fr; }
@@ -225,9 +259,6 @@ class SynthicApp(App[None]):
         return THEMES.get(self.theme, THEMES["synthic-space"])
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="tabs"):
-            for key in VIEWS:
-                yield Tab(key)
         with ContentSwitcher(initial=self.view_key, id="views"):
             yield ColumnView(self.board, id="column")
             yield PanesView(self.board, id="panes")
@@ -245,15 +276,37 @@ class SynthicApp(App[None]):
         with Horizontal(id="entry"):
             yield Static("> ", id="prompt")
             yield Input(placeholder=PLACEHOLDER, id="box")
-        yield Static("", id="status")
+        with Horizontal(id="status"):
+            for key in VIEWS:
+                yield Tab(key)
+            yield Static("", id="stats")
 
     def on_mount(self) -> None:
         self.show_view(self.view_key, remember=False)
-        self.say(f"Synthic {__version__}  {self.cwd}\n{KEYS}")
+        self.say(self.identity())
+        self.refresh_status()
+        self.paint_terminal(True)
         self.set_interval(1.0, self.tick)
         self.query_one("#box", Input).focus()
         if self.first_task:
             self.begin(self.first_task)
+
+    def paint_terminal(self, on: bool) -> None:
+        """Ask the terminal to use the ground as its own background (OSC 11) and give it back on leaving (OSC 111).
+
+        A window whose size is not a whole number of cells keeps a margin the application cannot draw in; it is
+        painted with the terminal's background, which is how a darker band appears at the right and bottom edges.
+        Terminals that do not know the sequence ignore it.
+        """
+        if self._driver is not None:
+            self._driver.write(f"\x1b]11;{self.tokens['ground']}\x1b\\" if on else "\x1b]111\x1b\\")
+
+    def on_unmount(self) -> None:
+        self.paint_terminal(False)
+
+    def identity(self) -> Text:
+        """What the screen says about itself, once: the name and version, and where it works."""
+        return Text.assemble(("Synthic", self.tokens["ink"]), f" {__version__}\n", shown(self.cwd, self.size.width - PAGE_MARGIN))
 
     """The views."""
 
@@ -285,6 +338,8 @@ class SynthicApp(App[None]):
             self.drawing_failed(error)
 
     def drawing_failed(self, error: Exception) -> None:
+        if not self.is_running:
+            return
         self.say(f"The {VIEWS[self.view_key]} view could not draw a change ({type(error).__name__}: {error}). The run goes on.", "bad")
 
     def draw_event(self, event: str, subject: Any) -> None:
@@ -390,12 +445,12 @@ class SynthicApp(App[None]):
 
     """What the interface says: the answer to a command, shown above the message box until the next one."""
 
-    def say(self, line: str, style: str = "", scrollable: bool = False) -> None:
+    def say(self, line: str | Text, style: str = "", scrollable: bool = False) -> None:
         """Show ``line`` above the message box. A ``scrollable`` one (the help) may fill the screen and takes the
         scroll keys while it is open."""
-        self.transcript.append(line)
+        self.transcript.append(str(line))
         notice = self.query_one("#notice")
-        self.query_one("#notice-text", Static).update(Text(line))
+        self.query_one("#notice-text", Static).update(Text(line) if isinstance(line, str) else line)
         notice.set_class(style == "bad", "bad")
         self.help_open = scrollable
         notice.display = True
@@ -433,6 +488,7 @@ class SynthicApp(App[None]):
     def on_resize(self) -> None:
         if self.help_open:
             self.fit_notice()
+        self.refresh_status()
 
     def engine_output(self, agent_id: str, kind: str, text: str) -> None:
         """The output callback of the runtime."""
@@ -586,17 +642,19 @@ class SynthicApp(App[None]):
         runtime = self.runtime if self.running() else None
         match word:
             case "help":
-                rows = "\n".join(f"  /{name:<9} {about}" for name, about in COMMANDS.items())
+                rows = "\n".join(f"  /{name:<13} {about}" for name, about in COMMANDS.items())
                 keys = "\n".join(f"  {key:<9} {about}" for key, about in HELP_KEYS)
                 self.say(f"Commands\n{rows}\n\nKeys\n{keys}", scrollable=True)
             case "exit":
                 self.call_later(self.action_quit)
-            case "clear" | "resume" | "model" | "effort" if self.running():
+            case "clear" | "resume" | "model" | "effort" | "instructions" if self.running():
                 self.say(f"A run is working: /stop it before /{word}.")
             case "clear":
                 self.clear()
-                self.say(f"Synthic {__version__}  {self.cwd}\n{KEYS}")
+                self.say(self.identity())
                 self.refresh_status()
+            case "instructions":
+                self.instructions(rest)
             case "resume" | "model" | "effort" | "view" if rest:
                 self.pick(word, rest)
             case "resume" | "model" | "effort" | "view":
@@ -617,6 +675,37 @@ class SynthicApp(App[None]):
                 self.export(rest)
             case _:
                 self.say(f"Unknown command /{word}. /help lists the commands.", "bad")
+
+    def instructions(self, rest: str) -> None:
+        """``/instructions`` lists the repo files that would load; ``on`` and ``off`` switch ``instructions.load_repo_files``
+        the way ``/model`` switches a role: over the policy, for this session only, and read when the next run starts."""
+        settings = self.loaded.policy.instructions
+        if rest not in ("", "on", "off"):
+            self.say("Usage: /instructions [on|off]", "bad")
+            return
+        if rest:
+            before = self.extra
+            self.extra = deep_merge(self.extra, {"instructions": {"load_repo_files": rest == "on"}})
+            try:
+                self.loaded = self.load(self.extra)
+            except Exception as error:
+                self.extra = before
+                self.say(f"Cannot switch the instruction files: {error}", "bad")
+                return
+            settings = self.loaded.policy.instructions
+            self.refresh_status()
+        found = [str(self.cwd / name) for name in settings.repo_files if (self.cwd / name).is_file()]
+        lines = [f"Repo instruction files are {'on' if settings.load_repo_files else 'off'}."]
+        if rest:
+            lines[0] = (
+                f"Repo instruction files are now {rest} for this session. It applies from the next run, or after /clear: "
+                "the system prompt of a run is fixed when it starts. Set instructions.load_repo_files in your policy "
+                "to make it permanent."
+            )
+        lines.append("Found in this folder: " + (", ".join(found) if found else "none"))
+        if settings.files:
+            lines.append("Your own files, always loaded: " + ", ".join(settings.files))
+        self.say("\n".join(lines))
 
     def answer(self, runtime: Runtime, rest: str) -> None:
         """``/answer id text``, or ``/answer text`` when one question is open."""
@@ -675,9 +764,11 @@ class SynthicApp(App[None]):
         self.say(f"Saved {target}")
 
     def cost(self) -> str:
-        if self.runtime is None and not self.board.agents:
+        run_dir = self.board.run_dir
+        label = self.run_id or (run_dir.name if run_dir else "")
+        if not label and not self.board.steps:
             return "Nothing spent: no run has started in this conversation."
-        lines = [f"Run {self.run_id}: {number(sum(v.calls for v in self.board.agents.values()))} steps, {money(self.board.total)}"]
+        lines = [f"Run {label}: {number(sum(v.calls for v in self.board.agents.values()))} steps, {money(self.board.total)}"]
         if self.runtime is not None:
             total = self.runtime.ledger.total
             lines.append(
@@ -720,7 +811,7 @@ class SynthicApp(App[None]):
             return
         before = self.extra
         role = {**self.extra.get("role", {}).get(policy.initial_role, {}), mode: choice}
-        self.extra = {"role": {policy.initial_role: role}}
+        self.extra = deep_merge(self.extra, {"role": {policy.initial_role: role}})
         try:
             self.loaded = self.load(self.extra)
         except Exception as error:
@@ -783,7 +874,7 @@ class SynthicApp(App[None]):
             typed = value[1:]
             names = [name for name in COMMANDS if name.startswith(typed)]
             names += [name for alias, name in ALIASES.items() if alias.startswith(typed) and name not in names]
-            found = [(name, f"/{name:<9} {COMMANDS[name]}") for name in names]
+            found = [(name, f"/{name:<13} {COMMANDS[name]}") for name in names]
             self.menu_mode, self.options = "commands", found
             self.fill_menu(found)
         elif self.menu_mode == "commands":
@@ -924,6 +1015,9 @@ class SynthicApp(App[None]):
         self.query_one("#prompt", Static).update(f"{name_of(self.board, self.target())} > " if several else "> ")
 
     def tick(self) -> None:
+        """Once a second. A tick that falls due while the app is shutting down finds no screen to draw on."""
+        if not self.is_running:
+            return
         for agent_id in list(self.board.agents) if self.running() else []:
             if self.board.agents[agent_id].state in LIVE:
                 self.measure(agent_id)
@@ -935,35 +1029,38 @@ class SynthicApp(App[None]):
             self.drawing_failed(error)
 
     def refresh_status(self) -> None:
+        """The state of the run, written after the tabs: what no longer fits is left out, never cut in half."""
         tokens, policy = self.tokens, self.loaded.policy
         muted = tokens["ink-muted"]
-        parts: list[Text] = [Text(self.model_of(self.focus_agent, effort=True), style=muted)]
+        items: dict[str, Text] = {"model": Text(self.model_of(self.focus_agent, effort=True), style=muted)}
         if self.state == "working":
-            parts.append(Text.assemble(("working ", tokens["tide"]), (elapsed(self.elapsed()), muted)))
+            items["state"] = Text.assemble(("working ", tokens["tide"]), (elapsed(self.elapsed()), muted))
         else:
             colour = {"idle": muted, "replied": muted, "delivered": tokens["moss"]}.get(self.state, tokens["down"])
-            parts.append(Text("waiting for you" if self.state == "replied" else self.state, style=colour))
+            items["state"] = Text("waiting for you" if self.state == "replied" else self.state, style=colour)
         if self.board.agents:
             cap = policy.budget.dollars
             spent = self.board.total
             warn = cap and spent >= 0.8 * cap
-            parts.append(Text(money(spent) + (f" of {money(cap)}" if cap else ""), style=tokens["sun"] if warn else muted))
+            items["cost"] = Text(money(spent) + (f" of {money(cap)}" if cap else ""), style=tokens["sun"] if warn else muted)
             view = self.board.agents.get(self.focus_agent)
             limit = self.compact_limit(self.focus_agent)
             if view is not None and limit:
-                parts.append(Text(f"context {number(view.context)}/{number(limit)}", style=muted))
-            parts.append(Text(f"{number(sum(v.calls for v in self.board.agents.values()))} steps", style=muted))
+                items["context"] = Text(f"context {number(view.context)}/{number(limit)}", style=muted)
+            items["steps"] = Text(f"{number(sum(v.calls for v in self.board.agents.values()))} steps", style=muted)
             live = [v for v in self.board.agents.values() if v.state in LIVE]
             if len(self.board.agents) > 1:
-                parts.append(Text(f"{len(live)} of {len(self.board.agents)} agents", style=muted))
+                items["agents"] = Text(f"{len(live)} of {len(self.board.agents)} agents", style=muted)
             if waiting := len(self.board.waiting()):
-                parts.append(Text(f"◆ {waiting} waiting", style=tokens["clay"]))
+                items["waiting"] = Text(f"◆ {waiting} waiting", style=tokens["clay"])
         if self.run_id:
-            parts.append(Text(f"run {self.run_id}", style=muted))
-        line = Text(" │ ", style=tokens["ink-faint"]).join(parts)
+            items["run"] = Text(f"run {self.run_id}", style=muted)
+        rule = Text(" │ ", style=tokens["ink-faint"])
+        room = self.size.width - PAGE_MARGIN - TABS_WIDTH - 2
+        line = Text.assemble(("│ ", tokens["ink-faint"]), fitted(items, room, rule))
         line.no_wrap = True
         line.overflow = "ellipsis"
-        self.query_one("#status", Static).update(line)
+        self.query_one("#stats", Static).update(line)
 
 
 def run(cwd: Path, load: Load, factory: Callable[[], Provider] | None = None, task: str = "") -> int:
