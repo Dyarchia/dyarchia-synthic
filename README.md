@@ -59,9 +59,11 @@ synthic
 ```
 
 Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`,
-`/context`, `/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves, and so does typing `exit` or
-`quit` while nothing is working. Ctrl+C first clears the message box, then stops a working run, and only
-then, pressed twice, leaves.
+`/context`, `/export`, `/help`), Esc interrupts the agent, and typing `exit` or `quit` leaves while nothing is
+working. Ctrl+C clears the message box, closes a menu and stops a working run; pressed a second time within two
+seconds it leaves in every state, ending the agents' shells with it. Ctrl+D does the same only when the box is
+empty (with text it deletes the character to the right). `/help` lists every command and key; it scrolls with
+Up, Down, PageUp, PageDown and the mouse wheel, and Esc closes it.
 
 The screen needs a real terminal: PowerShell, cmd, Windows Terminal, or Git Bash through `winpty synthic`.
 Where standard input or output is a pipe it stops with a message instead of starting.

@@ -23,7 +23,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click, Key
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -66,10 +66,22 @@ LEAVE_WORDS = ("exit", "quit")
 KEYS = (
     "Enter sends, / lists the commands, Tab completes, Up recalls a message.\n"
     "Ctrl+T changes the view, Shift+Up and Shift+Down change the agent in focus,\n"
-    "Ctrl+Up and Ctrl+Down move the selected step. Esc or Ctrl+C interrupts, Ctrl+C twice leaves."
+    "Ctrl+Up and Ctrl+Down move the selected step. Esc interrupts, Ctrl+C or Ctrl+D twice leaves."
 )
+HELP_KEYS = (
+    ("Enter", "send the message, or answer the open question"),
+    ("Tab", "complete a command; Up and Down recall a sent message"),
+    ("Ctrl+T", "change the view; Shift+Up and Down change the agent in focus"),
+    ("Ctrl+Up", "move the selected step; Ctrl+Down moves it back"),
+    ("Esc", "interrupt the run, or close a menu or this list"),
+    ("Ctrl+C", "clear the box, close a menu, stop the run; twice leaves"),
+    ("Ctrl+D", "like Ctrl+C on an empty box; with text it deletes a char"),
+)
+SCROLL_KEYS = ("up", "down", "pageup", "pagedown")
 RUNS_SHOWN = 30
 QUIT_WINDOW = 2.0
+QUIT_GRACE = 3.0
+HELP_CHROME = 12
 
 
 def state_file() -> Path:
@@ -94,6 +106,15 @@ class Tab(Static):
     def on_click(self, event: Click) -> None:
         event.stop()
         self.app.show_view(self.key)
+
+
+class Notice(VerticalScroll):
+    """The scrolling part of the notice box: the app is told whenever it moves, to redraw the scroll cue."""
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if self.is_attached:
+            self.app.refresh_cue()
 
 
 class SynthicApp(App[None]):
@@ -140,9 +161,11 @@ class SynthicApp(App[None]):
     .row { height: 1; }
 
     #ask { height: auto; max-height: 8; margin-top: 1; display: none; }
-    #notice { height: auto; max-height: 35vh; margin-top: 1; display: none; }
+    #notice { height: auto; margin-top: 1; display: none; }
+    #notice-scroll { height: auto; max-height: 35vh; }
     #notice-text { height: auto; color: $ink-muted; }
-    #notice.bad > #notice-text { color: $down; }
+    #notice.bad #notice-text { color: $down; }
+    #notice-more { height: 1; color: $ink-faint; display: none; }
     #menu {
         height: auto; max-height: 12; max-width: 96; margin-top: 1; padding: 0 1; display: none;
         background: $ground-raised; border: round $hairline; border-top: round $ink-faint;
@@ -156,6 +179,7 @@ class SynthicApp(App[None]):
     """
     BINDINGS = [
         Binding("ctrl+c", "leave", show=False, priority=True),
+        Binding("ctrl+d", "eof", show=False, priority=True),
         Binding("tab", "complete", show=False, priority=True),
         Binding("ctrl+t", "next_view", show=False, priority=True),
         Binding("shift+down", "agent(1)", show=False, priority=True),
@@ -192,6 +216,9 @@ class SynthicApp(App[None]):
         self.menu_mode: str | None = None
         self.options: list[tuple[str, str]] = []
         self.leave_at = 0.0
+        self.leave_key = ""
+        self.leaving = False
+        self.help_open = False
 
     @property
     def tokens(self) -> dict[str, str]:
@@ -207,9 +234,11 @@ class SynthicApp(App[None]):
             yield FleetView(self.board, id="fleet")
             yield LedgerView(self.board, id="ledger")
         yield Static("", id="ask")
-        with VerticalScroll(id="notice") as notice:
-            notice.can_focus = False
-            yield Static("", id="notice-text")
+        with Vertical(id="notice"):
+            with Notice(id="notice-scroll") as scroll:
+                scroll.can_focus = False
+                yield Static("", id="notice-text")
+            yield Static("", id="notice-more")
         menu = OptionList(id="menu")
         menu.can_focus = False
         yield menu
@@ -361,16 +390,49 @@ class SynthicApp(App[None]):
 
     """What the interface says: the answer to a command, shown above the message box until the next one."""
 
-    def say(self, line: str, style: str = "") -> None:
+    def say(self, line: str, style: str = "", scrollable: bool = False) -> None:
+        """Show ``line`` above the message box. A ``scrollable`` one (the help) may fill the screen and takes the
+        scroll keys while it is open."""
         self.transcript.append(line)
         notice = self.query_one("#notice")
         self.query_one("#notice-text", Static).update(Text(line))
         notice.set_class(style == "bad", "bad")
+        self.help_open = scrollable
         notice.display = True
-        notice.scroll_home(animate=False)
+        self.query_one("#notice-scroll").scroll_home(animate=False)
+        self.fit_notice()
 
     def hush(self) -> None:
+        self.help_open = False
         self.query_one("#notice").display = False
+        self.query_one("#notice-more").display = False
+
+    def fit_notice(self) -> None:
+        """Let an open help use every row the rest of the screen can spare, and no more."""
+        scroll = self.query_one("#notice-scroll")
+        if self.help_open:
+            ask = self.query_one("#ask")
+            taken = HELP_CHROME + (ask.outer_size.height if ask.display else 0)
+            scroll.styles.max_height = max(3, self.size.height - taken)
+        else:
+            scroll.styles.max_height = None
+        self.call_after_refresh(self.refresh_cue)
+
+    def refresh_cue(self) -> None:
+        """Tell the reader that the help goes on below, or that its end is reached."""
+        cue = self.query_one("#notice-more", Static)
+        scroll = self.query_one("#notice-scroll", VerticalScroll)
+        cue.display = self.help_open and scroll.max_scroll_y > 0
+        if cue.display:
+            if scroll.max_scroll_y - scroll.scroll_y >= 1:
+                text = "▼ more below · Up and Down, PageUp and PageDown or the wheel scroll · Esc closes"
+            else:
+                text = "▲ end of the list · Esc closes"
+            cue.update(text)
+
+    def on_resize(self) -> None:
+        if self.help_open:
+            self.fit_notice()
 
     def engine_output(self, agent_id: str, kind: str, text: str) -> None:
         """The output callback of the runtime."""
@@ -525,7 +587,8 @@ class SynthicApp(App[None]):
         match word:
             case "help":
                 rows = "\n".join(f"  /{name:<9} {about}" for name, about in COMMANDS.items())
-                self.say(f"Commands\n{rows}\n\n{KEYS}")
+                keys = "\n".join(f"  {key:<9} {about}" for key, about in HELP_KEYS)
+                self.say(f"Commands\n{rows}\n\nKeys\n{keys}", scrollable=True)
             case "exit":
                 self.call_later(self.action_quit)
             case "clear" | "resume" | "model" | "effort" if self.running():
@@ -738,7 +801,18 @@ class SynthicApp(App[None]):
         box.focus()
 
     def on_key(self, event: Key) -> None:
-        """Up and Down move in the menu when it is open, and through the messages already sent otherwise."""
+        """Up and Down move in the menu when it is open, and through the messages already sent otherwise.
+        While the help is open the four scroll keys move it instead."""
+        if self.help_open and event.key in SCROLL_KEYS:
+            event.stop()
+            scroll = self.query_one("#notice-scroll", VerticalScroll)
+            {
+                "up": scroll.scroll_up,
+                "down": scroll.scroll_down,
+                "pageup": scroll.scroll_page_up,
+                "pagedown": scroll.scroll_page_down,
+            }[event.key](animate=False)
+            return
         if event.key not in ("up", "down"):
             return
         event.stop()
@@ -771,23 +845,50 @@ class SynthicApp(App[None]):
             self.stop_run()
 
     def action_leave(self) -> None:
-        """Ctrl+C clears the box when it holds text, else interrupts a working run, else pressed twice it leaves."""
+        """Ctrl+C: clear the box, close a menu and stop a working run, and say that a second press leaves."""
+        self.press_to_leave("Ctrl+C")
+
+    def action_eof(self) -> None:
+        """Ctrl+D: with text in the box it deletes the character to the right; with an empty box it is Ctrl+C
+        for leaving only."""
         box = self.query_one("#box", Input)
-        now = time.monotonic()
         if box.value:
-            box.value = ""
-        elif self.running():
-            self.stop_run()
-        elif now - self.leave_at < QUIT_WINDOW:
-            self.call_later(self.action_quit)
+            box.action_delete_right()
         else:
-            self.leave_at = now
-            self.say("Press Ctrl+C again to leave.")
+            self.press_to_leave("Ctrl+D")
+
+    def press_to_leave(self, key: str) -> None:
+        """A second press of the same key within ``QUIT_WINDOW`` leaves in every state. The first one prepares it."""
+        if self.leaving:
+            return
+        now = time.monotonic()
+        if key == self.leave_key and now - self.leave_at < QUIT_WINDOW:
+            self.leaving = True
+            self.call_later(self.action_quit)
+            return
+        self.leave_key, self.leave_at = key, now
+        lead = ""
+        if key == "Ctrl+C":
+            box = self.query_one("#box", Input)
+            if self.menu_mode is not None:
+                self.close_menu()
+            box.value = ""
+            if self.running() and self.runtime is not None:
+                self.runtime.stop()
+                lead = "Interrupted: the run is stopping.\n"
+        self.say(f"{lead}Press {key} again to leave.")
 
     async def action_quit(self) -> None:
-        if self.running() and self.runtime is not None and self.job is not None:
+        """Leave: a working run is stopped and given ``QUIT_GRACE`` to end, then cancelled and given as long again,
+        so its shells and their children are killed before the screen is given back."""
+        self.leaving = True
+        job = self.job
+        if self.running() and self.runtime is not None and job is not None:
             self.runtime.stop()
-            await asyncio.wait([self.job], timeout=10)
+            await asyncio.wait([job], timeout=QUIT_GRACE)
+            if not job.done():
+                job.cancel()
+                await asyncio.wait([job], timeout=QUIT_GRACE)
         self.exit()
 
     """The question bar, the prompt and the status line."""

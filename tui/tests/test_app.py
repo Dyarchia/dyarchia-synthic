@@ -465,3 +465,59 @@ def test_exit_and_quit_typed_alone_leave_the_app_only_when_nothing_is_working(wo
 
     assert asyncio.run(leaves("exit")) and asyncio.run(leaves("quit"))
     assert not asyncio.run(leaves("exit now"))
+
+
+@pytest.mark.parametrize(("size", "fits"), [((120, 35), True), ((80, 24), False)], ids=["120x35", "80x24"])
+def test_the_help_never_clips_and_scrolls_with_the_keys(world: tuple[Path, Any], size: tuple[int, int], fits: bool) -> None:
+    project, load = world
+
+    async def scenario() -> None:
+        app = SynthicApp(project, load, lambda: ScriptedProvider([]))
+        async with app.run_test(size=size) as pilot:
+            await send(pilot, "/help")
+            await pilot.pause(0.2)
+            scroll, cue = app.query_one("#notice-scroll"), app.query_one("#notice-more", Static)
+            status_bar, views = app.query_one("#status"), app.query_one("#views")
+            assert status_bar.region.bottom <= size[1] and views.region.height >= 3
+            assert scroll.region.bottom <= size[1]
+            assert (scroll.max_scroll_y == 0) is fits and cue.display is (not fits)
+            if fits:
+                return
+            assert "more below" in str(cue.render()) and scroll.scroll_y == 0
+            await pilot.press("down")
+            assert scroll.scroll_y == 1
+            await pilot.press("pagedown", "pagedown", "pagedown")
+            assert scroll.scroll_y == scroll.max_scroll_y
+            await pilot.pause(0.1)
+            assert "end of the list" in str(cue.render())
+            await pilot.press("pageup", "up")
+            assert scroll.scroll_y < scroll.max_scroll_y
+            await pilot.press("escape")
+            assert not app.query_one("#notice").display and not cue.display
+            await send(pilot, "first")
+            await pilot.press("up")
+            assert app.query_one("#box", Input).value == "first"
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_c_and_ctrl_d_need_a_second_press_in_every_state(world: tuple[Path, Any]) -> None:
+    project, load = world
+
+    async def leaves(*keys: str, typed: str = "") -> tuple[bool, str]:
+        app = SynthicApp(project, load, lambda: ScriptedProvider([]))
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.query_one("#box", Input).value = typed
+            app.query_one("#box", Input).cursor_position = 0
+            await pilot.press(keys[0])
+            first = app._exit
+            for key in keys[1:]:
+                await pilot.press(key)
+            await pilot.pause(0.3)
+            return app._exit and not first, app.query_one("#box", Input).value
+
+    assert asyncio.run(leaves("ctrl+c", "ctrl+c")) == (True, "")
+    assert asyncio.run(leaves("ctrl+c", "ctrl+c", typed="text")) == (True, "")
+    assert asyncio.run(leaves("ctrl+d", "ctrl+d")) == (True, "")
+    assert asyncio.run(leaves("ctrl+c", "ctrl+d"))[0] is False
+    assert asyncio.run(leaves("ctrl+d", "ctrl+d", typed="text")) == (False, "xt")

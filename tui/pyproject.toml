@@ -6,6 +6,9 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = ["synthic", "textual>=8"]
 
+[project.optional-dependencies]
+test = ["pytest", "pywinpty; sys_platform == 'win32'"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

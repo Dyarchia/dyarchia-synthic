@@ -283,7 +283,9 @@ From the same terminal (when stdin is a terminal), type a line while the run goe
 
 Without `@agent` the root agent is addressed; `@a1` addresses child `a1`, and an unknown or ended
 agent gives a one-line note. Ctrl+C once is a clean stop (every process the agent started is killed and
-the summary is printed); a second Ctrl+C exits at once.
+the summary is printed); a second Ctrl+C exits at once. In the terminal interface (`synthic` alone) the first
+Ctrl+C clears the message box, closes a menu and stops a working run, and a second one within two seconds
+leaves in every state; Ctrl+D with an empty box does the same, and with text it deletes a character.
 
 From another terminal, for a run started hours ago or by a scheduler:
 
