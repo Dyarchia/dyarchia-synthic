@@ -69,6 +69,7 @@ from .journal import FileJournal, ended, pending_intents
 from .policy import decide, deep_merge
 from .prompt import build_system
 from .tools import builtin_tools, to_definition
+from .transcript import tool_line
 from .tools.jobs import JobManager
 from .tools.todo import TodoTool
 from .tools.todo import render as render_todo
@@ -1181,7 +1182,7 @@ class Agent:
         admitted: list[tuple[ToolCall, Tool, dict[str, Any]]] = []
         for call in calls:
             self.journal.append("tool_intent", {"call_id": call.id, "name": call.name, "input": call.input})
-            self.runtime.output(self.id, "tool_start", f"{call.name} {_short(json.dumps(call.input, ensure_ascii=False))}")
+            self.runtime.output(self.id, "tool_start", tool_line(call.name, call.input))
             verdict = await self._admit(call, texts)
             if isinstance(verdict, ToolOutput):
                 done.append((call, self._record(call, verdict, 0.0)))

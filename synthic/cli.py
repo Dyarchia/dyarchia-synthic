@@ -45,6 +45,7 @@ from .media import load as load_media
 from .policy import LoadedPolicy, PolicyError, deep_merge, load_policy
 from .tools.todo import render as render_todo
 from .tools.todo import tally as tally_todo
+from .transcript import markdown, tool_line
 from .types import Attachment, Provider, Record, Usage
 
 CONTROL_FILE = "control.jsonl"
@@ -105,11 +106,12 @@ def synthic_home() -> Path:
     return Path(raw) if raw else Path.home()
 
 
-def load(args: argparse.Namespace) -> tuple[Path, LoadedPolicy]:
+def load(args: argparse.Namespace, extra: dict[str, Any] | None = None) -> tuple[Path, LoadedPolicy]:
+    """The policy in force for ``args``; ``extra`` goes over the ``--set`` values, as an interface's own choices."""
     folder = Path(args.cwd or Path.cwd()).resolve()
     if not folder.is_dir():
         raise CliError(f"--cwd {folder} is not a folder")
-    overrides = deep_merge(parse_overrides(args.set), getattr(args, "schema_override", {}))
+    overrides = deep_merge(deep_merge(parse_overrides(args.set), getattr(args, "schema_override", {})), extra or {})
     loaded = load_policy(
         folder,
         Path(args.policy) if args.policy else None,
@@ -562,7 +564,7 @@ def cmd_tui(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
         raise CliError("the terminal interface is not installed: install the synthic-tui package") from None
     cwd, _ = load(args)
     require_key(factory)
-    return run(cwd, lambda: load(args)[1], factory, " ".join(args.task))
+    return run(cwd, lambda extra=None: load(args, extra)[1], factory, " ".join(args.task))
 
 
 def cmd_resume(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
@@ -644,19 +646,6 @@ def text_length(content: Any) -> int:
     return sum(len(block.get("text", "")) for block in content if isinstance(block, dict))
 
 
-def tool_target(name: str, tool_input: dict[str, Any]) -> str:
-    match name:
-        case "sh":
-            return str(tool_input.get("command", ""))
-        case "edit":
-            return str(tool_input.get("path", ""))
-        case "spawn":
-            return f"{tool_input.get('role', '')}: {tool_input.get('task', '')}"
-        case "mcp":
-            return f"{tool_input.get('server', '')}/{tool_input.get('tool', '')}"
-    return json.dumps(tool_input, ensure_ascii=False)
-
-
 def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool) -> str | None:
     """One trace line for a journal record, or ``None`` for the kinds that do not matter to a reader."""
     data = record.data
@@ -685,7 +674,7 @@ def describe(record: Record, results: dict[tuple[str, Any], Record], full: bool)
             name = str(data.get("name"))
             if name in ("done", "ask"):
                 return None
-            line = f"tool {name} {fit(tool_target(name, data.get('input', {})))}"
+            line = f"tool {tool_line(name, data.get('input', {}), None if full else 160)}"
             result = results.get((record.agent_id, data.get("call_id")))
             if result is None:
                 return line + "  -> no result"
@@ -746,6 +735,9 @@ def cmd_show(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
         (r.agent_id, r.data.get("call_id")): r for recs in by_agent.values() for r in recs if r.kind == "tool_result"
     }
     chosen = [args.agent] if args.agent else agents
+    if args.md:
+        sys.stdout.write(markdown(run_dir.name, {agent_id: by_agent[agent_id] for agent_id in chosen}, args.full))
+        return 0
     events = sorted(
         (r for agent_id in chosen for r in by_agent[agent_id]),
         key=lambda r: (r.ts, agent_order(r.agent_id), r.seq),
@@ -931,6 +923,7 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("run_id", nargs="?", help="default: the most recent run")
     show.add_argument("--agent", metavar="ID", help="only this agent")
     show.add_argument("--full", action="store_true", help="print texts and tool results in full")
+    show.add_argument("--md", action="store_true", help="print the run as a Markdown document (redirect it to a file to keep it)")
     add("policy", cmd_policy, "print the policy in force and where each value came from")
     questions = add("questions", cmd_questions, "list the open questions of a run")
     questions.add_argument("run_id", nargs="?", help="default: the most recent run")

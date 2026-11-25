@@ -144,7 +144,12 @@ def test_run_edits_a_file_delivers_and_is_listed_and_shown(setup: Setup, capsys:
     trace = capsys.readouterr().out
     assert f"run {run_id}" in trace
     assert "start lead in" in trace and "user [human]: make a.txt" in trace
-    assert re.search(r"tool edit a\.txt  -> ok, \d+ chars", trace)
+    assert re.search(r"tool edit: a\.txt \(new file, 1 lines\)  -> ok, \d+ chars", trace)
+    assert main(["show", run_id, "--md", *setup.opts]) == 0
+    page = capsys.readouterr().out
+    assert page.startswith(f"# Run {run_id}") and "### You (" in page and "make a.txt" in page
+    assert "- **edit: a.txt (new file, 1 lines)** (ok" in page and "**Ended delivered.** Created a.txt." in page
+    assert "- root: 2 steps, $0.0004" in page
     assert "done delivered: Created a.txt." in trace
     assert "cost:" in trace and "root" in trace and "open questions: none" in trace
 
@@ -155,7 +160,7 @@ def test_show_without_run_id_agent_filter_and_full(setup: Setup, capsys: pytest.
     capsys.readouterr()
     assert main(["show", *setup.opts]) == 0
     short_trace = capsys.readouterr().out
-    assert "tool sh echo marker-output  -> ok" in short_trace and "marker-output\n" not in short_trace.split("tool sh")[1]
+    assert "tool sh: echo marker-output  -> ok" in short_trace and "marker-output\n" not in short_trace.split("tool sh")[1]
     assert "..." in short_trace
     assert main(["show", "--full", "--agent", "root", *setup.opts]) == 0
     full = capsys.readouterr().out
