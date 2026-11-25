@@ -349,6 +349,8 @@ class ContextSettings:
     """Knobs of job 3. Sizes are in characters unless the name says tokens."""
 
     cache_ttl: Literal["5m", "1h"] = "5m"
+    resume_keep_thinking: bool = True
+    """Keep the thinking blocks of a resumed history (see ``Agent._keeps_thinking``); False drops them all."""
     output_cap: int = 12000
     output_head: int = 4000
     output_tail: int = 4000

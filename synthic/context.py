@@ -615,14 +615,17 @@ class Context:
             self._strip_thinking(first)
 
     def drop_thinking(self) -> None:
-        """Remove every thinking and redacted thinking block, as a resumed agent does after ``replay``.
+        """Remove every thinking and redacted thinking block.
 
-        A resumed history is rebuilt from the journal, and nothing proves its
-        prefix is byte for byte what each thinking block was bound to (an
-        older journal, a masked string, a changed engine). The docs allow
-        omitting all thinking blocks, so dropping them makes any resumed
-        history acceptable to preserved-thinking checks; the cost is the
-        model working again through reasoning it can no longer read.
+        Each thinking block is bound to the conversation it was made in: the
+        system prompt, the tools and every message before it. The docs allow
+        omitting all of them, so dropping them makes any history acceptable
+        to that check. It has two costs: the model works again through
+        reasoning it can no longer read, and every assistant turn changes, so
+        the whole conversation is written to the prompt cache again. A resumed
+        agent therefore does it only when it must (``Agent._keeps_thinking``),
+        and the loop does it when the API rejects a block.
+        https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
         """
         self._strip_thinking(-1)
 
@@ -862,7 +865,9 @@ class Context:
                     self._clean_attachments(data.get("attachments", []))
                 case "compaction":
                     self.apply_compaction(data["summary"], data.get("keep", 0))
-                case "resume":
+                case "resume" if not data.get("thinking_kept"):
+                    self._strip_thinking(-1)
+                case "thinking_dropped":
                     self._strip_thinking(-1)
 
 

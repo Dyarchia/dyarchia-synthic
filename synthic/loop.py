@@ -22,9 +22,11 @@ Rules that shape the code:
   image data are never masked (see ``Masker.mask_obj``).
 * A resumed agent reuses the system blocks and tool definitions of its
   ``start`` record instead of rebuilding them from today's policy, files and
-  plugins, and drops every thinking block of the replayed history
-  (``Context.drop_thinking``), so the API never sees thinking bound to a prefix
-  that may differ from the one it was made on.
+  plugins. The replayed history is byte for byte the one the process had, so
+  its thinking blocks stay and the prompt cache still matches; they are dropped
+  (``Context.drop_thinking``) only when the model changed, when the policy says
+  so, or when the API rejects one, and the journal records each drop so that
+  every later replay sends the same history.
 * Tool results enter the journal in the order they complete, and the context in
   that same order, which is the order ``Context.replay`` re-adds them.
 * Tools that act only on the agent's own state (``SELF_TOOLS``) skip the
@@ -179,6 +181,15 @@ def _short(text: str, limit: int = 160) -> str:
 
 def _yes(text: str) -> bool:
     return text.strip().lower().rstrip(".!") in YES
+
+
+def _unbound_thinking(error: ProviderError) -> bool:
+    """A request the API refused because a thinking block no longer matches the conversation before it.
+
+    The fixed text of that 400 is quoted in the preserved thinking docs.
+    https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+    """
+    return error.status == 400 and "bound to a different conversation" in str(error).lower()
 
 
 def _too_long(error: ProviderError) -> bool:
@@ -341,6 +352,7 @@ class Agent:
         self._next_model: str | None = None
         self._compact_retry_at: int | None = None
         self._overflow_retried = False
+        self._thinking_retried = False
         self._announced: set[str] = set()
         self._cancel = asyncio.Event()
         self._mode: Literal["stop", "cancel", "redirect"] | None = None
@@ -436,11 +448,30 @@ class Agent:
         agent._restore(records, text, attachments)
         return agent
 
+    def _keeps_thinking(self, records: list[Record]) -> bool:
+        """Whether a resumed history keeps its thinking blocks.
+
+        It does when the policy allows it (``context.resume_keep_thinking``)
+        and the model is the one that made the last call: a block is readable
+        only by the model that produced it. Keeping them is what lets the
+        first call after a resume read the prompt cache instead of writing the
+        whole conversation again.
+        """
+        if not self.runtime.policy.context.resume_keep_thinking:
+            return False
+        calls = [r.data.get("model_id", "") for r in records if r.kind == "model_call" and "purpose" not in r.data]
+        if not calls:
+            return True
+        last, now = str(calls[-1]), self.spec().id
+        return last.startswith(now) or now.startswith(last)
+
     def _restore(self, records: list[Record], text: str | None, attachments: Sequence[Attachment] = ()) -> None:
         self._resumed = True
-        self.journal.append("resume", {})
+        kept = self._keeps_thinking(records)
+        self.journal.append("resume", {"thinking_kept": kept})
         self.context.replay(records)
-        self.context.drop_thinking()
+        if not kept:
+            self.context.drop_thinking()
         self.rejections = verify.rejections(records)
         for record in records:
             match record.kind:
@@ -955,12 +986,20 @@ class Agent:
                 self._overflow_retried = True
                 self._force_compact = True
                 self.runtime.output(self.id, "warning", f"the prompt is too long, compacting: {_short(str(error))}")
+            elif _unbound_thinking(error) and not self._thinking_retried:
+                """Drop every thinking block and try once more. The record makes each later replay drop
+                them at this same point, so the blocks the API refused are never sent again."""
+                self._thinking_retried = True
+                self.context.drop_thinking()
+                self.journal.append("thinking_dropped", {"reason": _short(str(error))})
+                self.runtime.output(self.id, "warning", "the API rejected earlier thinking: dropped it and trying again")
             elif error.retryable and spec.fallback:
                 self._switch(spec.fallback, str(error))
             else:
                 self._finish = ("failed", f"The model call failed: {error}")
             return None
         self._overflow_retried = False
+        self._thinking_retried = False
         self.steps += 1
         self.context.note_model_call(reply.usage)
         self._account(reply)

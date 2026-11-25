@@ -213,6 +213,7 @@ _SCHEMA: dict[str, Any] = {
     },
     "context": {
         "cache_ttl": ("5m", "1h"),
+        "resume_keep_thinking": "bool",
         "output_cap": "int",
         "output_head": "int",
         "output_tail": "int",

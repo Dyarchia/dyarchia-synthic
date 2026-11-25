@@ -81,6 +81,7 @@ question_fallback = "assume"
 
 [context]
 cache_ttl = "5m"
+resume_keep_thinking = true
 output_cap = 12000
 output_head = 4000
 output_tail = 4000

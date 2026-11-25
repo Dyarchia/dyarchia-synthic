@@ -742,8 +742,95 @@ def test_masked_reply_replays_identically_and_resume_reuses_the_start_record(tmp
     assert asyncio.run(main()).status == "delivered"
     resumed = provider.requests[0]
     assert resumed.system == first_provider.requests[0].system and resumed.tools == first_provider.requests[0].tools
-    assert resumed.messages[:4] == no_thinking(live[:4])
+    assert resumed.messages[:4] == live[:4]
     assert results(resumed)[0]["content"] == UNKNOWN_OUTCOME
+
+
+def resume(tmp_path: Path, runtime: Runtime, script: list[Any], task: dict[str, Any] | None = None) -> ScriptedProvider:
+    provider = ScriptedProvider(script)
+
+    async def main() -> AgentResult:
+        again = Runtime(make_policy(tmp_path, task), project(tmp_path), provider, run_id=runtime.run_id)
+        try:
+            return await again.resume("Next task.")
+        finally:
+            await again.close()
+
+    assert asyncio.run(main()).status == "delivered"
+    return provider
+
+
+def thought(signature: str) -> dict[str, Any]:
+    return {"type": "thinking", "thinking": "", "signature": signature}
+
+
+def thinking_run(tmp_path: Path) -> tuple[Runtime, list[dict[str, Any]]]:
+    """A delivered run whose turns carry thinking, a long output behind a receipt and a masked secret."""
+    long_output = tool_use("sh", {"command": py_command("-c", "print('x' * 30000)")})
+    script = [
+        reply(thought("one"), text(f"Using {SECRET}"), long_output),
+        reply(thought("two"), tool_use("done", {"summary": "First.", "status": "delivered"})),
+    ]
+    runtime, result, provider = go(tmp_path, script)
+    assert result.status == "delivered"
+    return runtime, provider.requests[-1].messages
+
+
+def signatures(messages: list[dict[str, Any]]) -> list[str]:
+    return [b["signature"] for m in messages for b in m["content"] if b["type"] == "thinking"]
+
+
+def test_a_resumed_history_is_the_live_one_with_its_thinking(tmp_path: Path) -> None:
+    runtime, live = thinking_run(tmp_path)
+    provider = resume(tmp_path, runtime, [reply(thought("three"), tool_use("done", {"summary": "Second.", "status": "delivered"}))])
+    sent = provider.requests[0].messages
+    assert sent[: len(live)] == live and signatures(sent) == ["one", "two"]
+    assert [r["data"] for r in records(runtime) if r["kind"] == "resume"] == [{"thinking_kept": True}]
+    again = resume(tmp_path, runtime, [done("Third.")])
+    assert signatures(again.requests[0].messages) == ["one", "two", "three"]
+
+
+def test_a_resume_drops_thinking_when_the_model_changed_or_the_policy_says_so(tmp_path: Path) -> None:
+    runtime, _ = thinking_run(tmp_path)
+    other = {"role": {"lead": {"model": "backup"}}}
+    provider = resume(tmp_path, runtime, [reply(thought("new"), tool_use("done", {"summary": "Second.", "status": "delivered"}))], other)
+    assert signatures(provider.requests[0].messages) == []
+    off = {"role": {"lead": {"model": "backup"}}, "context": {"resume_keep_thinking": False}}
+    provider = resume(tmp_path, runtime, [done("Third.")], off)
+    assert signatures(provider.requests[0].messages) == []
+    assert [r["data"]["thinking_kept"] for r in records(runtime) if r["kind"] == "resume"] == [False, False]
+    """The drop is in the journal: a later resume that keeps thinking still leaves the dropped blocks out."""
+    provider = resume(tmp_path, runtime, [done("Fourth.")], other)
+    assert signatures(provider.requests[0].messages) == []
+
+
+def test_a_resume_of_an_older_journal_drops_thinking_where_it_was_dropped_then(tmp_path: Path) -> None:
+    runtime, _ = thinking_run(tmp_path)
+    journal = runtime.run_dir / "root" / JOURNAL_FILE
+    with journal.open("a", encoding="utf-8") as file:
+        file.write(json.dumps({"seq": 900, "ts": 1.0, "agent_id": "root", "kind": "resume", "data": {}}) + "\n")
+    provider = resume(tmp_path, runtime, [done("Second.")])
+    assert signatures(provider.requests[0].messages) == []
+
+
+def test_thinking_the_api_rejects_is_dropped_once_and_stays_dropped(tmp_path: Path) -> None:
+    runtime, _ = thinking_run(tmp_path)
+    refusal = ProviderError("messages.1.content.0: Invalid `signature`. The block is bound to a different conversation.", 400)
+    provider = resume(tmp_path, runtime, [refusal, reply(thought("fresh"), tool_use("done", {"summary": "Second.", "status": "delivered"}))])
+    assert signatures(provider.requests[0].messages) == ["one", "two"] and signatures(provider.requests[1].messages) == []
+    assert "thinking_dropped" in kinds(runtime)
+    again = resume(tmp_path, runtime, [done("Third.")])
+    assert signatures(again.requests[0].messages) == ["fresh"]
+    always = ScriptedProvider([refusal, refusal])
+
+    async def main() -> AgentResult:
+        third = Runtime(make_policy(tmp_path), project(tmp_path), always, run_id=runtime.run_id)
+        try:
+            return await third.resume("Again.")
+        finally:
+            await third.close()
+
+    assert asyncio.run(main()).status == "failed" and not always.script
 
 
 def test_fallback_is_used_for_one_call_then_the_role_model_returns(tmp_path: Path) -> None:
