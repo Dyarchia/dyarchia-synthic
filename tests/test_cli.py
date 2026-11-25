@@ -721,3 +721,14 @@ def test_control_gives_one_clear_line_for_an_unknown_agent(capsys: pytest.Captur
     control.line("/add @a9 hello")
     control.line("/redirect @a1 go")
     assert capsys.readouterr().out.splitlines() == ["= no agent 'a9'", "= agent 'a1' has ended"]
+
+
+def test_synthic_alone_opens_the_interface_and_a_mistyped_command_is_never_a_task() -> None:
+    from synthic.cli import interactive
+
+    assert interactive([]) == ["tui"]
+    assert interactive(["fix the failing test"]) == ["tui", "fix the failing test"]
+    assert interactive(["--set", "budget.dollars=1"]) == ["tui", "--set", "budget.dollars=1"]
+    assert interactive(["run", "a task"]) == ["run", "a task"]
+    assert interactive(["shwo"]) == ["shwo"] and main(["shwo"]) == 2
+    assert interactive(["--version"]) == ["--version"] and interactive(["-h"]) == ["-h"]

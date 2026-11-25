@@ -48,19 +48,25 @@ cd C:\Users\you\my-project
 synthic run "Add a --verbose flag to cli.py and a test for it"
 ```
 
-To work on one screen instead, as in other coding agents:
+To work on one screen instead, as in other coding agents, type it alone:
 
 ```powershell
-synthic tui
+synthic
 ```
 
-Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/context`,
-`/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves.
+Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`,
+`/context`, `/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves.
+
+The tabs at the top draw the same run in four ways, and Ctrl+T moves through them: `Column` (one
+conversation), `Panes` (agents, conversation, and the full text of a step), `Fleet` (the agents side by
+side) and `Ledger` (one row per step, with time and cost). Shift+Up and Shift+Down change the agent you
+talk to; Ctrl+Up and Ctrl+Down move the selected step.
 
 ```text
 Command                          What it does
 -------------------------------  ---------------------------------------------------
-synthic tui                      Open the screen: start, follow and steer runs
+synthic                          Open the screen: start, follow and steer runs
+synthic "task"                   Open the screen on that task
 synthic run "task"               Do a task from start to finish
 synthic resume RUN "next task"   Go on in the same conversation
 synthic runs                     List your runs

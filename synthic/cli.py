@@ -944,13 +944,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def interactive(argv: Sequence[str]) -> list[str]:
+    """``synthic`` alone opens the terminal interface, and ``synthic "a task"`` opens it on that task.
+
+    A first word that is neither a command nor a sentence stays as it is, so a mistyped command is an
+    error and never a task that reaches the model.
+    """
+    words = list(argv)
+    first = words[0] if words else ""
+    if first in ("-h", "--help", "--version"):
+        return words
+    if not first or first.startswith("-") or any(mark.isspace() for mark in first.strip()):
+        return ["tui", *words]
+    return words
+
+
 def main(argv: Sequence[str] | None = None, *, provider_factory: ProviderFactory | None = None) -> int:
     """Run one command and return its exit code. ``provider_factory`` replaces the Anthropic provider (tests)."""
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     try:
-        args = build_parser().parse_args(argv)
+        args = build_parser().parse_args(interactive(sys.argv[1:] if argv is None else argv))
     except SystemExit as exit_:
         return exit_.code if isinstance(exit_.code, int) else 2
     try:

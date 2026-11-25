@@ -83,7 +83,8 @@ class Entry:
     """One thing that happened in a run.
 
     ``kind`` is ``user``, ``text`` (the model speaking), ``tool`` (a call, with ``detail`` holding its
-    result and ``error`` saying whether it failed), ``note`` or ``end``.
+    result, ``error`` saying whether it failed, and ``name``, ``input`` and ``seconds`` as journaled),
+    ``note`` or ``end``.
     """
 
     kind: str
@@ -91,6 +92,9 @@ class Entry:
     detail: str = ""
     error: bool = False
     ts: float = 0.0
+    name: str = ""
+    input: dict[str, Any] | None = None
+    seconds: float = 0.0
 
 
 def entries(records: Iterable[Record]) -> Iterator[Entry]:
@@ -113,10 +117,12 @@ def entries(records: Iterable[Record]) -> Iterator[Entry]:
                     continue
                 result = results.get(data.get("call_id"))
                 if result is None:
-                    yield Entry("tool", tool_line(name, tool_input), "no result", True, record.ts)
+                    yield Entry("tool", tool_line(name, tool_input), "no result", True, record.ts, name, tool_input)
                     continue
                 failed = bool(result.data.get("is_error"))
-                yield Entry("tool", tool_line(name, tool_input), content_text(result.data.get("content", "")), failed, record.ts)
+                text = content_text(result.data.get("content", ""))
+                seconds = float(result.data.get("seconds", 0.0) or 0.0)
+                yield Entry("tool", tool_line(name, tool_input), text, failed, record.ts, name, tool_input, seconds)
             case "question":
                 yield Entry("note", f"question {data.get('question_id')}: {data.get('text', '')}", ts=record.ts)
             case "answer":
