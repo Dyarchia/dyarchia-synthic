@@ -571,13 +571,33 @@ NO_CONSOLE = (
 )
 
 
+def has_terminal() -> bool:
+    """Whether standard input and output are a real terminal. On Windows ``isatty`` is also true for NUL, so the
+    console mode of both handles is asked as well: the interface reads keys through that console."""
+    streams = (sys.stdin, sys.stdout)
+    if not all(stream is not None and stream.isatty() for stream in streams):
+        return False
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetConsoleMode.restype = wintypes.BOOL
+    mode = wintypes.DWORD()
+    return all(kernel.GetConsoleMode(kernel.GetStdHandle(handle), ctypes.byref(mode)) for handle in (-10, -11))
+
+
 def cmd_tui(args: argparse.Namespace, factory: ProviderFactory | None) -> int:
     """Open the terminal interface. It is a separate package, so the engine carries no interface code.
 
     Without a real terminal the interface would draw into a pipe and ignore every key, then never end: it
     refuses to start instead.
     """
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not has_terminal():
         raise CliError(NO_CONSOLE)
     try:
         from synthic_tui.app import run

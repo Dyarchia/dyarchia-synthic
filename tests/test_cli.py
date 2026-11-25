@@ -759,3 +759,18 @@ def test_a_bare_synthic_on_pipes_ends_at_once_instead_of_hanging(tmp_path: Path)
         [sys.executable, "-m", "synthic"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, env=env
     )
     assert done.returncode == 2 and "winpty synthic" in done.stderr
+
+
+def test_a_terminal_needs_both_streams_to_be_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("sys.stdin", None)
+    assert not cli.has_terminal()
+    monkeypatch.setattr("sys.stdin", Tty())
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    assert not cli.has_terminal()
+    monkeypatch.setattr("sys.stdout", Tty())
+    monkeypatch.setattr("os.name", "posix")
+    assert cli.has_terminal()

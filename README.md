@@ -60,7 +60,11 @@ synthic
 
 Write a task and press Enter. `/` lists the commands (`/model`, `/effort`, `/resume`, `/clear`, `/view`,
 `/context`, `/export`, `/help`), Esc interrupts the agent, Ctrl+C twice leaves, and so does typing `exit` or
-`quit` while nothing is working.
+`quit` while nothing is working. Ctrl+C first clears the message box, then stops a working run, and only
+then, pressed twice, leaves.
+
+The screen needs a real terminal: PowerShell, cmd, Windows Terminal, or Git Bash through `winpty synthic`.
+Where standard input or output is a pipe it stops with a message instead of starting.
 
 Here a person is at the terminal (`human.present`): the agent answers a greeting or a question in prose and
 waits for your next message, and when it asks you something it waits, and what you type is the answer.
