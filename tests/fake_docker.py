@@ -35,8 +35,10 @@ def save(data: dict) -> None:
 
 
 def log(entry: dict) -> None:
-    with (STATE / "calls.jsonl").open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps(entry) + "\n")
+    """One unbuffered write per call: several fakes run at once, and a buffered writer splits a long line
+    into pieces that another process can write between."""
+    with (STATE / "calls.jsonl").open("ab", buffering=0) as sink:
+        sink.write((json.dumps(entry) + "\n").encode())
 
 
 def host(path: str) -> Path:
