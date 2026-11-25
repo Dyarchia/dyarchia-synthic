@@ -308,6 +308,17 @@ keeps one session and lets the engine compact the finished task (see Context and
 omitted (the most recent run is used); a word shaped like a run id that matches no run is an error, not
 text. A run that is alive in another process is refused.
 
+A resumed conversation is byte for byte the one the process had, thinking blocks included, so its first
+call reads the prompt cache instead of writing everything again (when it comes within `cache_ttl`). The
+thinking is dropped only when the model of the role changed, when `context.resume_keep_thinking = false`,
+or when the API rejects a block; the journal records each drop.
+
+```bash
+synthic show [run-id]              # the trace: one line per event, then cost and open questions
+synthic show [run-id] --full       # texts and tool results whole
+synthic show [run-id] --md > run.md   # the run as a Markdown document
+```
+
 ## Tools
 
 ```text
